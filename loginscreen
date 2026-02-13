@@ -1,0 +1,1118 @@
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { BlurView } from 'expo-blur';
+import * as Haptics from "expo-haptics";
+import { LinearGradient } from "expo-linear-gradient";
+import * as LocalAuthentication from "expo-local-authentication";
+import * as Location from "expo-location";
+import { useEffect, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  Modal,
+  Platform,
+  Pressable,
+  SafeAreaView,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  View
+} from "react-native";
+import Animated, {
+  FadeIn,
+  FadeInDown
+} from "react-native-reanimated";
+
+import { getHistory, loginByPin, punchActionMobile } from "../api";
+
+const { width, height } = Dimensions.get('window');
+const isSmallDevice = width < 375;
+
+export default function LoginScreen({ navigation }) {
+  const [pin, setPin] = useState(["", "", "", ""]);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [biometricType, setBiometricType] = useState("");
+  const [registeredUsers, setRegisteredUsers] = useState([]);
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [currentLocation, setCurrentLocation] = useState(null);
+  const [isScrolled, setIsScrolled] = useState(false);
+  
+  const boxes = useRef([]);
+  const loginBoxes = useRef([]);
+  const scrollViewRef = useRef(null);
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    checkBiometrics();
+    loadRegisteredUsers();
+    requestLocationPermission();
+    return () => clearInterval(timer);
+  }, []);
+
+  const requestLocationPermission = async () => {
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status === 'granted') getCurrentLocation();
+    } catch (error) {}
+  };
+
+  const getCurrentLocation = async () => {
+    try {
+      const location = await Location.getCurrentPositionAsync({ 
+        accuracy: Location.Accuracy.Balanced 
+      });
+      const address = await Location.reverseGeocodeAsync({ 
+        latitude: location.coords.latitude, 
+        longitude: location.coords.longitude 
+      });
+      const locationData = {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        address: address[0] 
+          ? `${address[0].city || ''}, ${address[0].region || ''}` 
+          : 'Location Active',
+      };
+      setCurrentLocation(locationData);
+    } catch (error) {}
+  };
+
+  const checkBiometrics = async () => {
+    const compatible = await LocalAuthentication.hasHardwareAsync();
+    const enrolled = await LocalAuthentication.isEnrolledAsync();
+    const types = await LocalAuthentication.supportedAuthenticationTypesAsync();
+    if (compatible && enrolled) {
+      setBiometricAvailable(true);
+      setBiometricType(
+        types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION) 
+          ? "Face ID" 
+          : "Touch ID"
+      );
+    }
+  };
+
+  const loadRegisteredUsers = async () => {
+    try {
+      const data = await AsyncStorage.getItem("registered_users");
+      if (data) setRegisteredUsers(JSON.parse(data));
+    } catch (error) {}
+  };
+
+  const removeUser = async (userId) => {
+    Alert.alert(
+      "Remove User",
+      "Are you sure you want to remove this user from biometric authentication?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Remove",
+          style: "destructive",
+          onPress: async () => {
+            const newUsers = registeredUsers.filter(u => u.id !== userId);
+            await AsyncStorage.setItem("registered_users", JSON.stringify(newUsers));
+            setRegisteredUsers(newUsers);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          }
+        }
+      ]
+    );
+  };
+
+  const onDigit = (idx, v, isLogin = false) => {
+    if (!/^\d?$/.test(v)) return;
+    const next = [...pin];
+    next[idx] = v;
+    setPin(next);
+    
+    if (v && idx < 3) {
+      const nextRef = isLogin ? loginBoxes.current[idx + 1] : boxes.current[idx + 1];
+      nextRef?.focus();
+    } else if (v && idx === 3 && isLogin) {
+      loginWithPin(next.join(""));
+    }
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
+
+  const loginWithPin = async (finalPin = pin.join("")) => {
+    if (finalPin.length < 4) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Incomplete PIN", "Please enter your 4-digit PIN.");
+      return;
+    }
+    try {
+      setBusy(true);
+      const auth = await loginByPin(finalPin);
+      if (!auth?.success) throw new Error(auth.msg || "Invalid PIN entered.");
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setShowLoginModal(false);
+      setPin(["", "", "", ""]);
+      
+      const role = (auth.role || "").toLowerCase();
+      if (role === "employee") {
+        const hist = await getHistory(auth.user.id);
+        navigation.replace("MainTabs", { user: auth.user, hist: hist });
+      } else if (role === "admin") {
+        navigation.replace("Admin", { user: auth.user });
+      }
+      setBusy(false);
+    } catch (e) {
+      setBusy(false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Login Failed", e.message);
+      setPin(["", "", "", ""]);
+    }
+  };
+
+  const registerNewUser = async () => {
+    if (pin.some(d => d === "")) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Incomplete PIN", "Please enter your 4-digit PIN.");
+      return;
+    }
+    try {
+      setBusy(true);
+      const auth = await loginByPin(pin.join(""));
+      if (!auth?.success) throw new Error("Verification Failed");
+      
+      // Check if user already registered
+      if (registeredUsers.some(u => u.id === auth.user.id)) {
+        setBusy(false);
+        Alert.alert("Already Registered", "This user is already registered for biometric authentication.");
+        setPin(["", "", "", ""]);
+        return;
+      }
+      
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: `Link ${biometricType} for ${auth.user.name}`,
+        fallbackLabel: "Use PIN",
+      });
+      
+      if (result.success) {
+        const newUser = { 
+          id: auth.user.id, 
+          name: auth.user.name, 
+          emp_code: auth.user.emp_code, 
+          pin: pin.join("") 
+        };
+        const newUsers = [...registeredUsers, newUser];
+        await AsyncStorage.setItem("registered_users", JSON.stringify(newUsers));
+        setRegisteredUsers(newUsers);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setNote(`${biometricType} successfully linked for ${auth.user.name}`);
+        setPin(["", "", "", ""]);
+        
+        setTimeout(() => setNote(""), 4000);
+      }
+      setBusy(false);
+    } catch (e) {
+      setBusy(false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Registration Failed", e.message);
+    }
+  };
+
+  const biometricPunch = async (type) => {
+    if (!biometricAvailable || registeredUsers.length === 0) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      Alert.alert(
+        "Setup Required", 
+        `Please register your ${biometricType || "biometric authentication"} first.`
+      );
+      return;
+    }
+    
+    try {
+      setBusy(true);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      
+      const res = await LocalAuthentication.authenticateAsync({ 
+        promptMessage: "Authenticate to continue",
+        fallbackLabel: "Use PIN",
+        cancelLabel: "Cancel"
+      });
+      
+      if (!res.success) { 
+        setBusy(false); 
+        return; 
+      }
+
+      const location = currentLocation || await getCurrentLocation();
+      let punched = false;
+      
+      for (const user of registeredUsers) {
+        const punchRes = await punchActionMobile(user.pin, type, location);
+        if (punchRes.success) {
+          punched = true;
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          Alert.alert(
+            "Success", 
+            `${user.name} successfully checked ${type.toUpperCase()} at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`
+          );
+          break;
+        }
+      }
+      
+      if (!punched) throw new Error("Verification failed.");
+      setBusy(false);
+    } catch (e) {
+      setBusy(false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Failed", e.message);
+    }
+  };
+
+  const formatTime = () => {
+    return currentTime.toLocaleTimeString('en-US', { 
+      hour: 'numeric', 
+      minute: '2-digit',
+      hour12: true
+    }).toLowerCase();
+  };
+
+  const formatDate = () => {
+    const options = { 
+      weekday: 'long',
+      month: 'short', 
+      day: 'numeric' 
+    };
+    return currentTime.toLocaleDateString('en-US', options);
+  };
+
+  const handleScroll = (event) => {
+    const offsetY = event.nativeEvent.contentOffset.y;
+    setIsScrolled(offsetY > 10);
+  };
+
+  return (
+    <>
+      <StatusBar barStyle="light-content" />
+      <SafeAreaView style={styles.safeArea}>
+        <LinearGradient 
+          colors={["#000000", "#1c1c1e", "#2c2c2e"]} 
+          style={styles.page}
+        >
+          {/* Floating Header */}
+          <Animated.View 
+            style={[
+              styles.floatingHeader,
+              isScrolled && styles.floatingHeaderScrolled
+            ]}
+          >
+            <View style={styles.headerContent}>
+              <Text style={styles.headerTitle}>InstantLog</Text>
+              <View style={styles.headerTime}>
+                <Text style={styles.headerTimeText}>{formatTime()}</Text>
+              </View>
+            </View>
+          </Animated.View>
+
+          <ScrollView 
+            ref={scrollViewRef}
+            contentContainerStyle={styles.scrollContainer}
+            showsVerticalScrollIndicator={false}
+            onScroll={handleScroll}
+            scrollEventThrottle={16}
+          >
+            
+            {/* Hero Section */}
+            <Animated.View 
+              entering={FadeInDown.delay(100).springify()} 
+              style={styles.heroSection}
+            >
+              <Text style={styles.heroTime}>{formatTime()}</Text>
+              <Text style={styles.heroDate}>{formatDate()}</Text>
+              <Text style={styles.greeting}>Good {
+                currentTime.getHours() < 12 ? 'Morning' : 
+                currentTime.getHours() < 18 ? 'Afternoon' : 'Evening'
+              }</Text>
+            </Animated.View>
+
+            {/* Location Info */}
+            {currentLocation && (
+              <Animated.View 
+                entering={FadeIn.delay(200)} 
+                style={styles.locationCard}
+              >
+                <View style={styles.locationContent}>
+                  <MaterialCommunityIcons name="map-marker" size={16} color="#0a84ff" />
+                  <Text style={styles.locationText}>{currentLocation.address}</Text>
+                </View>
+              </Animated.View>
+            )}
+
+            {/* Punch Actions - iOS Style Cards */}
+            <Animated.View 
+              entering={FadeInDown.delay(300).springify()} 
+              style={styles.punchSection}
+            >
+              <Text style={styles.sectionLabel}>Quick Actions</Text>
+              <View style={styles.punchGrid}>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.punchCard,
+                    pressed && styles.punchCardPressed
+                  ]}
+                  onPress={() => biometricPunch("in")}
+                  disabled={busy}
+                >
+                  <View style={[styles.punchIconContainer, { backgroundColor: 'rgba(10, 132, 255, 0.1)' }]}>
+                    <MaterialCommunityIcons name="login" size={28} color="#0a84ff" />
+                  </View>
+                  <Text style={styles.punchCardTitle}>Punch In</Text>
+                  <Text style={styles.punchCardSubtitle}>Start your day</Text>
+                  <View style={styles.punchBadge}>
+                    <MaterialCommunityIcons 
+                      name={biometricType === "Face ID" ? "face-recognition" : "fingerprint"} 
+                      size={12} 
+                      color="#0a84ff" 
+                    />
+                  </View>
+                </Pressable>
+
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.punchCard,
+                    pressed && styles.punchCardPressed
+                  ]}
+                  onPress={() => biometricPunch("out")}
+                  disabled={busy}
+                >
+                  <View style={[styles.punchIconContainer, { backgroundColor: 'rgba(255, 69, 58, 0.1)' }]}>
+                    <MaterialCommunityIcons name="logout" size={28} color="#ff453a" />
+                  </View>
+                  <Text style={styles.punchCardTitle}>Punch Out</Text>
+                  <Text style={styles.punchCardSubtitle}>End your day</Text>
+                  <View style={[styles.punchBadge, { backgroundColor: 'rgba(255, 69, 58, 0.1)' }]}>
+                    <MaterialCommunityIcons 
+                      name={biometricType === "Face ID" ? "face-recognition" : "fingerprint"} 
+                      size={12} 
+                      color="#ff453a" 
+                    />
+                  </View>
+                </Pressable>
+              </View>
+            </Animated.View>
+
+            {/* Registration Section */}
+            <Animated.View 
+              entering={FadeInDown.delay(400).springify()} 
+              style={styles.registrationCard}
+            >
+              <View style={styles.cardHeader}>
+                <View style={styles.cardIcon}>
+                  <MaterialCommunityIcons name="shield-check" size={20} color="#32d74b" />
+                </View>
+                <View>
+                  <Text style={styles.cardTitle}>Register {biometricType}</Text>
+                  
+                </View>
+              </View>
+              
+              <View style={styles.pinContainer}>
+                {pin.map((digit, index) => (
+                  <View key={index} style={styles.pinDigitWrapper}>
+                    <TextInput
+                      ref={ref => boxes.current[index] = ref}
+                      style={[
+                        styles.pinDigit,
+                        digit && styles.pinDigitFilled
+                      ]}
+                      value={digit}
+                      onChangeText={v => onDigit(index, v)}
+                      keyboardType="number-pad"
+                      maxLength={1}
+                      secureTextEntry
+                      textContentType="oneTimeCode"
+                    />
+                    {digit && <View style={styles.pinIndicator} />}
+                  </View>
+                ))}
+              </View>
+
+              {note ? (
+                <Animated.View entering={FadeIn} style={styles.successCard}>
+                  <MaterialCommunityIcons name="check-circle" size={18} color="#32d74b" />
+                  <Text style={styles.successText}>{note}</Text>
+                </Animated.View>
+              ) : null}
+
+              <Pressable
+                style={({ pressed }) => [
+                  styles.registerButton,
+                  pressed && styles.registerButtonPressed,
+                  busy && styles.registerButtonDisabled
+                ]}
+                onPress={registerNewUser}
+                disabled={busy}
+              >
+                {busy ? (
+                  <ActivityIndicator color="#ffffff" size="small" />
+                ) : (
+                  <>
+                    <MaterialCommunityIcons name="link" size={18} color="#ffffff" />
+                    <Text style={styles.registerButtonText}>Link {biometricType}</Text>
+                  </>
+                )}
+              </Pressable>
+            </Animated.View>
+
+            {/* Registered Users List */}
+            {registeredUsers.length > 0 && (
+              <Animated.View 
+                entering={FadeInDown.delay(500).springify()} 
+                style={styles.usersCard}
+              >
+                <View style={styles.cardHeader}>
+                  <MaterialCommunityIcons name="account-group" size={20} color="#5e5ce6" />
+                  <Text style={styles.cardTitle}>Registered Users</Text>
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>{registeredUsers.length}</Text>
+                  </View>
+                </View>
+                
+                <View style={styles.usersList}>
+                  {registeredUsers.map((user, idx) => (
+                    <Animated.View 
+                      key={idx} 
+                      entering={FadeIn.delay(550 + idx * 50)}
+                      style={styles.userRow}
+                    >
+                      <View style={styles.userAvatar}>
+                        <Text style={styles.userAvatarText}>
+                          {user.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
+                        </Text>
+                      </View>
+                      <View style={styles.userInfo}>
+                        <Text style={styles.userName}>{user.name}</Text>
+                        <Text style={styles.userCode}>{user.emp_code}</Text>
+                      </View>
+                      <Pressable
+                        style={({ pressed }) => [
+                          styles.removeButton,
+                          pressed && styles.removeButtonPressed
+                        ]}
+                        onPress={() => removeUser(user.id)}
+                      >
+                        <MaterialCommunityIcons name="delete-outline" size={18} color="#ff453a" />
+                      </Pressable>
+                    </Animated.View>
+                  ))}
+                </View>
+              </Animated.View>
+            )}
+
+            {/* Admin Access */}
+            <Animated.View entering={FadeInDown.delay(600).springify()}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.adminCard,
+                  pressed && styles.adminCardPressed
+                ]}
+                onPress={() => { 
+                  setPin(["","","",""]); 
+                  setShowLoginModal(true); 
+                }}
+              >
+                <View style={styles.adminCardContent}>
+                  <MaterialCommunityIcons name="shield-lock" size={22} color="#5e5ce6" />
+                  <View style={styles.adminTextContainer}>
+                    <Text style={styles.adminTitle}>Administrator Access</Text>
+                    <Text style={styles.adminSubtitle}>Manage system settings</Text>
+                  </View>
+                  <MaterialCommunityIcons name="chevron-right" size={20} color="#8e8e93" />
+                </View>
+              </Pressable>
+            </Animated.View>
+
+            <View style={{ height: 40 }} />
+          </ScrollView>
+
+          {/* iOS Style Modal */}
+          <Modal
+            visible={showLoginModal}
+            animationType="slide"
+            transparent={true}
+            statusBarTranslucent={true}
+          >
+            <BlurView intensity={90} tint="dark" style={styles.modalContainer}>
+              <SafeAreaView style={styles.modalSafeArea}>
+                <View style={styles.modalContent}>
+                  <View style={styles.modalHeader}>
+                    <Pressable
+                      style={styles.modalCloseButton}
+                      onPress={() => {
+                        setShowLoginModal(false);
+                        setPin(["", "", "", ""]);
+                      }}
+                    >
+                      <MaterialCommunityIcons name="close" size={24} color="#8e8e93" />
+                    </Pressable>
+                    <Text style={styles.modalTitle}>Admin Login</Text>
+                    <View style={{ width: 40 }} />
+                  </View>
+
+                  <View style={styles.modalBody}>
+                    <View style={styles.modalIcon}>
+                      <LinearGradient
+                        colors={['#5e5ce6', '#4d4acf']}
+                        style={styles.modalGradient}
+                      >
+                        <MaterialCommunityIcons name="lock" size={32} color="#ffffff" />
+                      </LinearGradient>
+                    </View>
+                    
+                    <Text style={styles.modalInstruction}>
+                      Enter your PIN to access administrator settings
+                    </Text>
+
+                    <View style={styles.modalPinContainer}>
+                      {pin.map((digit, index) => (
+                        <View key={index} style={styles.modalPinWrapper}>
+                          <TextInput
+                            ref={ref => loginBoxes.current[index] = ref}
+                            style={[
+                              styles.modalPinDigit,
+                              digit && styles.modalPinDigitFilled
+                            ]}
+                            value={digit}
+                            onChangeText={v => onDigit(index, v, true)}
+                            keyboardType="number-pad"
+                            maxLength={1}
+                            secureTextEntry
+                            textContentType="oneTimeCode"
+                            autoFocus={index === 0}
+                          />
+                          {digit && <View style={styles.modalPinIndicator} />}
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+
+                  <View style={styles.modalFooter}>
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.modalButton,
+                        pressed && styles.modalButtonPressed,
+                        busy && styles.modalButtonDisabled
+                      ]}
+                      onPress={() => loginWithPin()}
+                      disabled={busy}
+                    >
+                      {busy ? (
+                        <ActivityIndicator color="#ffffff" />
+                      ) : (
+                        <Text style={styles.modalButtonText}>Continue</Text>
+                      )}
+                    </Pressable>
+                  </View>
+                </View>
+              </SafeAreaView>
+            </BlurView>
+          </Modal>
+        </LinearGradient>
+      </SafeAreaView>
+    </>
+  );
+}
+
+const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#000000',
+  },
+  page: {
+    flex: 1,
+  },
+  
+  // Floating Header
+  floatingHeader: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 100,
+    backgroundColor: 'transparent',
+    paddingTop: Platform.OS === 'ios' ? 10 : 40,
+    paddingHorizontal: 20,
+  },
+  floatingHeaderScrolled: {
+    backgroundColor: 'rgba(28, 28, 30, 0.95)',
+    borderBottomWidth: 0.5,
+    borderBottomColor: 'rgba(84, 84, 88, 0.65)',
+  },
+  headerContent: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    height: 44,
+  },
+  headerTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  headerTime: {
+    backgroundColor: 'rgba(118, 118, 128, 0.24)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  headerTimeText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#ffffff',
+  },
+
+  scrollContainer: {
+    paddingTop: Platform.OS === 'ios' ? 100 : 80,
+    paddingHorizontal: 20,
+    paddingBottom: 40,
+  },
+
+  // Hero Section
+  heroSection: {
+    alignItems: 'center',
+    marginBottom: 32,
+  },
+  heroTime: {
+    fontSize: 64,
+    fontWeight: '300',
+    color: '#ffffff',
+    letterSpacing: -2,
+    fontVariant: ['tabular-nums'],
+  },
+  heroDate: {
+    fontSize: 17,
+    color: '#8e8e93',
+    fontWeight: '400',
+    marginTop: 4,
+  },
+  greeting: {
+    fontSize: 15,
+    color: '#636366',
+    fontWeight: '500',
+    marginTop: 8,
+  },
+
+  // Location Card
+  locationCard: {
+    backgroundColor: 'rgba(28, 28, 30, 0.8)',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(84, 84, 88, 0.65)',
+  },
+  locationContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  locationText: {
+    fontSize: 15,
+    color: '#0a84ff',
+    fontWeight: '500',
+  },
+
+  // Punch Section
+  punchSection: {
+    marginBottom: 24,
+  },
+  sectionLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#8e8e93',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginBottom: 12,
+    marginLeft: 4,
+  },
+  punchGrid: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  punchCard: {
+    flex: 1,
+    backgroundColor: 'rgba(28, 28, 30, 0.8)',
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(84, 84, 88, 0.65)',
+    position: 'relative',
+  },
+  punchCardPressed: {
+    backgroundColor: 'rgba(44, 44, 46, 0.8)',
+    transform: [{ scale: 0.98 }],
+  },
+  punchIconContainer: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  punchCardTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginBottom: 4,
+  },
+  punchCardSubtitle: {
+    fontSize: 13,
+    color: '#8e8e93',
+    fontWeight: '400',
+  },
+  punchBadge: {
+    position: 'absolute',
+    top: 16,
+    right: 16,
+    backgroundColor: 'rgba(10, 132, 255, 0.1)',
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(10, 132, 255, 0.2)',
+  },
+
+  // Registration Card
+  registrationCard: {
+    backgroundColor: 'rgba(28, 28, 30, 0.8)',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(84, 84, 88, 0.65)',
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 24,
+  },
+  cardIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(50, 215, 75, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(50, 215, 75, 0.2)',
+  },
+  cardTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  cardDescription: {
+    fontSize: 13,
+    color: '#8e8e93',
+    marginTop: 2,
+  },
+  pinContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 12,
+    marginBottom: 20,
+  },
+  pinDigitWrapper: {
+    position: 'relative',
+  },
+  pinDigit: {
+    width: 56,
+    height: 64,
+    borderRadius: 12,
+    backgroundColor: 'rgba(44, 44, 46, 0.8)',
+    borderWidth: 1,
+    borderColor: 'rgba(84, 84, 88, 0.65)',
+    fontSize: 32,
+    fontWeight: '400',
+    color: 'transparent',
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
+  },
+  pinDigitFilled: {
+    borderColor: '#32d74b',
+    backgroundColor: 'rgba(50, 215, 75, 0.1)',
+  },
+  pinIndicator: {
+    position: 'absolute',
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#ffffff',
+    top: 26,
+    left: 22,
+  },
+  successCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(50, 215, 75, 0.1)',
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(50, 215, 75, 0.2)',
+    gap: 8,
+  },
+  successText: {
+    fontSize: 14,
+    color: '#32d74b',
+    fontWeight: '500',
+  },
+  registerButton: {
+    flexDirection: 'row',
+    height: 52,
+    borderRadius: 12,
+    backgroundColor: '#32d74b',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 8,
+  },
+  registerButtonPressed: {
+    backgroundColor: '#2fc046',
+    transform: [{ scale: 0.98 }],
+  },
+  registerButtonDisabled: {
+    opacity: 0.6,
+  },
+  registerButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+
+  // Users Card
+  usersCard: {
+    backgroundColor: 'rgba(28, 28, 30, 0.8)',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(84, 84, 88, 0.65)',
+  },
+  usersList: {
+    marginTop: 8,
+  },
+  userRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 0.5,
+    borderBottomColor: 'rgba(84, 84, 88, 0.3)',
+  },
+  userAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#5e5ce6',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  userAvatarText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+    letterSpacing: 0.5,
+  },
+  userInfo: {
+    flex: 1,
+  },
+  userName: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#ffffff',
+    marginBottom: 2,
+  },
+  userCode: {
+    fontSize: 13,
+    color: '#8e8e93',
+    fontWeight: '400',
+  },
+  removeButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 69, 58, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 69, 58, 0.2)',
+  },
+  removeButtonPressed: {
+    backgroundColor: 'rgba(255, 69, 58, 0.2)',
+    transform: [{ scale: 0.95 }],
+  },
+  badge: {
+    backgroundColor: 'rgba(94, 92, 230, 0.1)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(94, 92, 230, 0.2)',
+    marginLeft: 'auto',
+  },
+  badgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#5e5ce6',
+  },
+
+  // Admin Card
+  adminCard: {
+    backgroundColor: 'rgba(28, 28, 30, 0.8)',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(84, 84, 88, 0.65)',
+    marginBottom: 16,
+  },
+  adminCardPressed: {
+    backgroundColor: 'rgba(44, 44, 46, 0.8)',
+  },
+  adminCardContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    gap: 12,
+  },
+  adminTextContainer: {
+    flex: 1,
+  },
+  adminTitle: {
+    fontSize: 17,
+    fontWeight: '500',
+    color: '#ffffff',
+    marginBottom: 2,
+  },
+  adminSubtitle: {
+    fontSize: 13,
+    color: '#8e8e93',
+  },
+
+  // Modal Styles
+  modalContainer: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+  },
+  modalSafeArea: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: 'rgba(28, 28, 30, 0.95)',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingTop: 20,
+    paddingBottom: Platform.OS === 'ios' ? 44 : 24,
+    borderTopWidth: 1,
+    borderColor: 'rgba(84, 84, 88, 0.65)',
+    maxHeight: '80%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    marginBottom: 32,
+  },
+  modalCloseButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  modalBody: {
+    alignItems: 'center',
+    paddingHorizontal: 40,
+    marginBottom: 32,
+  },
+  modalIcon: {
+    marginBottom: 24,
+  },
+  modalGradient: {
+    width: 80,
+    height: 80,
+    borderRadius: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalInstruction: {
+    fontSize: 15,
+    color: '#8e8e93',
+    textAlign: 'center',
+    marginBottom: 32,
+    lineHeight: 20,
+  },
+  modalPinContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 16,
+  },
+  modalPinWrapper: {
+    position: 'relative',
+  },
+  modalPinDigit: {
+    width: 60,
+    height: 68,
+    borderRadius: 14,
+    backgroundColor: 'rgba(44, 44, 46, 0.8)',
+    borderWidth: 1,
+    borderColor: 'rgba(84, 84, 88, 0.65)',
+    fontSize: 36,
+    fontWeight: '300',
+    color: 'transparent',
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
+  },
+  modalPinDigitFilled: {
+    borderColor: '#5e5ce6',
+    backgroundColor: 'rgba(94, 92, 230, 0.1)',
+  },
+  modalPinIndicator: {
+    position: 'absolute',
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#ffffff',
+    top: 27,
+    left: 23,
+  },
+  modalFooter: {
+    paddingHorizontal: 20,
+  },
+  modalButton: {
+    height: 52,
+    borderRadius: 12,
+    backgroundColor: '#5e5ce6',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalButtonPressed: {
+    backgroundColor: '#4d4acf',
+    transform: [{ scale: 0.98 }],
+  },
+  modalButtonDisabled: {
+    opacity: 0.6,
+  },
+  modalButtonText: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+});
