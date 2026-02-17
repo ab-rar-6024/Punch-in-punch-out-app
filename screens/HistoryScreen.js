@@ -31,6 +31,7 @@ export default function HistoryScreen({ route, navigation }) {
   const [selectedMonth, setSelectedMonth] = useState(dayjs().month());
   const [selectedYear, setSelectedYear] = useState(dayjs().year());
   const [selectedDay, setSelectedDay] = useState(null);
+  const [selectedWeek, setSelectedWeek] = useState(0);
 
   useEffect(() => {
     Animated.timing(fadeAnim, {
@@ -49,6 +50,11 @@ export default function HistoryScreen({ route, navigation }) {
     return unsubscribe;
   }, [navigation]);
 
+  // Reset selected week when month changes
+  useEffect(() => {
+    setSelectedWeek(0);
+  }, [selectedMonth, selectedYear]);
+
   const processHistory = () => {
     if (!hist) return [];
     
@@ -66,8 +72,6 @@ export default function HistoryScreen({ route, navigation }) {
     } else {
       return [];
     }
-    
-    console.log("Raw API Data:", JSON.stringify(data, null, 2));
     
     // Process each record
     const processedData = data.map(record => {
@@ -158,6 +162,23 @@ export default function HistoryScreen({ route, navigation }) {
            recordDate.year() === selectedYear;
   });
 
+  // Helper function to get week data
+  const getWeekData = (weekIndex) => {
+    const startIndex = weekIndex * 7;
+    return filteredHistory.slice(startIndex, startIndex + 7);
+  };
+
+  // Helper function to get week range display
+  const getWeekRange = (weekIndex) => {
+    const weekData = getWeekData(weekIndex);
+    if (weekData.length === 0) return '';
+    
+    const firstDay = dayjs(weekData[0].date);
+    const lastDay = dayjs(weekData[weekData.length - 1].date);
+    
+    return `${firstDay.format('MMM DD')} - ${lastDay.format('MMM DD, YYYY')}`;
+  };
+
   // Calculate stats including leaves
   const calculateStats = () => {
     const totalDays = filteredHistory.length;
@@ -168,8 +189,7 @@ export default function HistoryScreen({ route, navigation }) {
       return sum + duration;
     }, 0);
     const avgHours = totalDays > 0 ? (totalHours / totalDays).toFixed(1) : 0;
-    
-    console.log("Stats:", { totalDays, presentDays, leaveDays, totalHours, avgHours });
+  
     
     return { totalDays, presentDays, leaveDays, totalHours, avgHours };
   };
@@ -895,8 +915,51 @@ export default function HistoryScreen({ route, navigation }) {
           <View style={[styles.chartContainer, { backgroundColor: isDark ? "#1e293b" : "#fff" }]}>
             {filteredHistory.length > 0 ? (
               <>
+                {/* Week Navigation */}
+                <View style={styles.weekNavigation}>
+                  <Pressable 
+                    style={styles.weekNavButton}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      setSelectedWeek(Math.max(0, selectedWeek - 1));
+                    }}
+                  >
+                    <MaterialCommunityIcons 
+                      name="chevron-left" 
+                      size={24} 
+                      color={isDark ? "#60a5fa" : "#3b82f6"} 
+                    />
+                  </Pressable>
+                  
+                  <Text style={[styles.weekText, { color: isDark ? "#fff" : "#1e293b" }]}>
+                    Week {selectedWeek + 1} of {Math.max(1, Math.ceil(filteredHistory.length / 7))}
+                  </Text>
+                  
+                  <Pressable 
+                    style={styles.weekNavButton}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      setSelectedWeek(Math.min(Math.ceil(filteredHistory.length / 7) - 1, selectedWeek + 1));
+                    }}
+                  >
+                    <MaterialCommunityIcons 
+                      name="chevron-right" 
+                      size={24} 
+                      color={isDark ? "#60a5fa" : "#3b82f6"} 
+                    />
+                  </Pressable>
+                </View>
+
+                {/* Week Range Display */}
+                {getWeekData(selectedWeek).length > 0 && (
+                  <Text style={[styles.weekRange, { color: isDark ? '#94a3b8' : '#64748b' }]}>
+                    {getWeekRange(selectedWeek)}
+                  </Text>
+                )}
+
+                {/* Chart Bars */}
                 <View style={styles.chartBars}>
-                  {filteredHistory.slice(0, 7).map((day, index) => {
+                  {getWeekData(selectedWeek).map((day, index) => {
                     const hours = calculateDurationInHours(day.time_in, day.time_out);
                     const isLeave = day.isLeave === true;
                     const maxHours = 12;
@@ -939,6 +1002,16 @@ export default function HistoryScreen({ route, navigation }) {
                     );
                   })}
                 </View>
+
+                {/* Empty days placeholder if week has less than 7 days */}
+                {getWeekData(selectedWeek).length < 7 && getWeekData(selectedWeek).length > 0 && (
+                  <View style={styles.emptyDaysMessage}>
+                    <Text style={[styles.emptyDaysText, { color: isDark ? '#94a3b8' : '#64748b' }]}>
+                      {7 - getWeekData(selectedWeek).length} more day(s) in this week
+                    </Text>
+                  </View>
+                )}
+
                 <View style={styles.chartLegend}>
                   <View style={styles.chartLegendItem}>
                     <View style={[styles.chartLegendColor, { backgroundColor: '#3b82f6' }]} />
@@ -1438,6 +1511,39 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
     shadowRadius: 2,
+  },
+  weekNavigation: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  weekNavButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+  },
+  weekText: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  weekRange: {
+    fontSize: 13,
+    textAlign: 'center',
+    marginBottom: 20,
+    fontStyle: 'italic',
+  },
+  emptyDaysMessage: {
+    alignItems: 'center',
+    marginTop: 10,
+    marginBottom: 5,
+  },
+  emptyDaysText: {
+    fontSize: 12,
+    fontStyle: 'italic',
   },
   chartBars: {
     flexDirection: 'row',
