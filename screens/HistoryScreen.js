@@ -7,6 +7,8 @@ import { useEffect, useRef, useState } from "react";
 import {
   Animated,
   Dimensions,
+  FlatList,
+  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -32,6 +34,12 @@ export default function HistoryScreen({ route, navigation }) {
   const [selectedYear, setSelectedYear] = useState(dayjs().year());
   const [selectedDay, setSelectedDay] = useState(null);
   const [selectedWeek, setSelectedWeek] = useState(0);
+  
+  // Modal states
+  const [modalVisible, setModalVisible] = useState(false);
+  const [modalData, setModalData] = useState([]);
+  const [modalTitle, setModalTitle] = useState('');
+  const [modalType, setModalType] = useState('');
 
   useEffect(() => {
     Animated.timing(fadeAnim, {
@@ -142,7 +150,6 @@ export default function HistoryScreen({ route, navigation }) {
       }
     });
     
-    
     return uniqueData;
   };
 
@@ -152,7 +159,6 @@ export default function HistoryScreen({ route, navigation }) {
   const yesterdayStr = dayjs().subtract(1, 'day').format("YYYY-MM-DD");
   const todayRec = historyData.find((d) => d.date === todayStr) || {};
   const yesterdayRec = historyData.find((d) => d.date === yesterdayStr) || {};
-
 
   // Filter history for selected month
   const filteredHistory = historyData.filter(record => {
@@ -189,7 +195,6 @@ export default function HistoryScreen({ route, navigation }) {
       return sum + duration;
     }, 0);
     const avgHours = totalDays > 0 ? (totalHours / totalDays).toFixed(1) : 0;
-  
     
     return { totalDays, presentDays, leaveDays, totalHours, avgHours };
   };
@@ -324,6 +329,60 @@ export default function HistoryScreen({ route, navigation }) {
     return days;
   };
 
+  // Handle stat card press
+  const handleStatPress = (type, data) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    
+    if (data.length === 0) return;
+    
+    let title = '';
+    let modalDataType = '';
+    
+    switch(type) {
+      case 'total':
+        title = `Working Days - ${getMonthName(selectedMonth)} ${selectedYear}`;
+        modalDataType = 'working';
+        break;
+      case 'present':
+        title = `Days Present - ${getMonthName(selectedMonth)} ${selectedYear}`;
+        modalDataType = 'present';
+        break;
+      case 'leave':
+        title = `Leave Days - ${getMonthName(selectedMonth)} ${selectedYear}`;
+        modalDataType = 'leave';
+        break;
+      case 'hours':
+        title = `Hours Summary - ${getMonthName(selectedMonth)} ${selectedYear}`;
+        modalDataType = 'hours';
+        break;
+    }
+    
+    setModalTitle(title);
+    setModalType(modalDataType);
+    setModalData(data);
+    setModalVisible(true);
+  };
+
+  // Get data for each stat
+  const getWorkingDaysData = () => {
+    return filteredHistory.filter(d => d.time_in && d.time_out);
+  };
+
+  const getPresentDaysData = () => {
+    return filteredHistory.filter(d => d.time_in && d.time_out);
+  };
+
+  const getLeaveDaysData = () => {
+    return filteredHistory.filter(d => d.isLeave === true);
+  };
+
+  const getHoursData = () => {
+    return filteredHistory.filter(d => d.time_in && d.time_out).map(day => ({
+      ...day,
+      hours: calculateDurationInHours(day.time_in, day.time_out)
+    }));
+  };
+
   const calendarDays = generateCalendarDays();
   const stats = calculateStats();
   const selectedDayData = selectedDay ? getAttendanceForDate(selectedDay) : null;
@@ -351,6 +410,107 @@ export default function HistoryScreen({ route, navigation }) {
         return '#e879f9';
       default:
         return '#a855f7';
+    }
+  };
+
+  // Render modal item based on type
+  const renderModalItem = ({ item }) => {
+    switch(modalType) {
+      case 'working':
+      case 'present':
+        return (
+          <View style={[styles.modalItem, { borderBottomColor: isDark ? '#334155' : '#e5e7eb' }]}>
+            <View style={styles.modalItemHeader}>
+              <MaterialCommunityIcons name="calendar-check" size={20} color="#10b981" />
+              <Text style={[styles.modalItemDate, { color: isDark ? '#fff' : '#1e293b' }]}>
+                {dayjs(item.date).format('dddd, MMM DD, YYYY')}
+              </Text>
+            </View>
+            <View style={styles.modalItemDetails}>
+              <View style={styles.modalDetailRow}>
+                <Text style={[styles.modalDetailLabel, { color: isDark ? '#94a3b8' : '#64748b' }]}>Check In:</Text>
+                <Text style={[styles.modalDetailValue, { color: isDark ? '#fff' : '#1e293b' }]}>
+                  {formatTime(item.time_in)}
+                </Text>
+              </View>
+              <View style={styles.modalDetailRow}>
+                <Text style={[styles.modalDetailLabel, { color: isDark ? '#94a3b8' : '#64748b' }]}>Check Out:</Text>
+                <Text style={[styles.modalDetailValue, { color: isDark ? '#fff' : '#1e293b' }]}>
+                  {formatTime(item.time_out)}
+                </Text>
+              </View>
+              <View style={styles.modalDetailRow}>
+                <Text style={[styles.modalDetailLabel, { color: isDark ? '#94a3b8' : '#64748b' }]}>Duration:</Text>
+                <Text style={[styles.modalDetailValue, { color: isDark ? '#fff' : '#1e293b' }]}>
+                  {calculateDuration(item.time_in, item.time_out)}
+                </Text>
+              </View>
+            </View>
+          </View>
+        );
+      
+      case 'leave':
+        return (
+          <View style={[styles.modalItem, { borderBottomColor: isDark ? '#334155' : '#e5e7eb' }]}>
+            <View style={styles.modalItemHeader}>
+              <MaterialCommunityIcons name="beach" size={20} color="#a855f7" />
+              <Text style={[styles.modalItemDate, { color: isDark ? '#fff' : '#1e293b' }]}>
+                {dayjs(item.date).format('dddd, MMM DD, YYYY')}
+              </Text>
+            </View>
+            <View style={styles.modalItemDetails}>
+              <View style={styles.modalDetailRow}>
+                <Text style={[styles.modalDetailLabel, { color: isDark ? '#94a3b8' : '#64748b' }]}>Leave Type:</Text>
+                <Text style={[styles.modalDetailValue, { color: isDark ? '#fff' : '#1e293b' }]}>
+                  {item.leaveType}
+                </Text>
+              </View>
+              {item.leaveReason && (
+                <View style={styles.modalDetailRow}>
+                  <Text style={[styles.modalDetailLabel, { color: isDark ? '#94a3b8' : '#64748b' }]}>Reason:</Text>
+                  <Text style={[styles.modalDetailValue, { color: isDark ? '#fff' : '#1e293b', flex: 1 }]}>
+                    {item.leaveReason}
+                  </Text>
+                </View>
+              )}
+            </View>
+          </View>
+        );
+      
+      case 'hours':
+        return (
+          <View style={[styles.modalItem, { borderBottomColor: isDark ? '#334155' : '#e5e7eb' }]}>
+            <View style={styles.modalItemHeader}>
+              <MaterialCommunityIcons name="clock-outline" size={20} color="#f59e0b" />
+              <Text style={[styles.modalItemDate, { color: isDark ? '#fff' : '#1e293b' }]}>
+                {dayjs(item.date).format('dddd, MMM DD, YYYY')}
+              </Text>
+            </View>
+            <View style={styles.modalItemDetails}>
+              <View style={styles.modalDetailRow}>
+                <Text style={[styles.modalDetailLabel, { color: isDark ? '#94a3b8' : '#64748b' }]}>Hours Worked:</Text>
+                <Text style={[styles.modalDetailValue, { color: isDark ? '#fff' : '#1e293b' }]}>
+                  {item.hours.toFixed(1)} hours
+                </Text>
+              </View>
+              <View style={styles.modalDetailRow}>
+                <Text style={[styles.modalDetailLabel, { color: isDark ? '#94a3b8' : '#64748b' }]}>Check In:</Text>
+                <Text style={[styles.modalDetailValue, { color: isDark ? '#fff' : '#1e293b' }]}>
+                  {formatTime(item.time_in)}
+                </Text>
+              </View>
+              <View style={styles.modalDetailRow}>
+                <Text style={[styles.modalDetailLabel, { color: isDark ? '#94a3b8' : '#64748b' }]}>Check Out:</Text>
+                <Text style={[styles.modalDetailValue, { color: isDark ? '#fff' : '#1e293b' }]}>
+                  {formatTime(item.time_out)}
+                </Text>
+              </View>
+            </View>
+          </View>
+        );
+      
+      default:
+        return null;
     }
   };
 
@@ -675,7 +835,11 @@ export default function HistoryScreen({ route, navigation }) {
           </View>
 
           <View style={styles.statsGrid}>
-            <View style={[styles.statCard, { backgroundColor: isDark ? 'rgba(59, 130, 246, 0.1)' : '#dbeafe' }]}>
+            {/* Working Days Card */}
+            <Pressable 
+              style={[styles.statCard, { backgroundColor: isDark ? 'rgba(59, 130, 246, 0.1)' : '#dbeafe' }]}
+              onPress={() => handleStatPress('total', getWorkingDaysData())}
+            >
               <MaterialCommunityIcons name="calendar-multiselect" size={24} color="#3b82f6" />
               <Text style={[styles.statNumber, { color: isDark ? '#fff' : '#1e293b' }]}>
                 {stats.totalDays}
@@ -683,9 +847,13 @@ export default function HistoryScreen({ route, navigation }) {
               <Text style={[styles.statLabel, { color: isDark ? '#94a3b8' : '#64748b' }]}>
                 Working Days
               </Text>
-            </View>
+            </Pressable>
 
-            <View style={[styles.statCard, { backgroundColor: isDark ? 'rgba(16, 185, 129, 0.1)' : '#d1fae5' }]}>
+            {/* Days Present Card */}
+            <Pressable 
+              style={[styles.statCard, { backgroundColor: isDark ? 'rgba(16, 185, 129, 0.1)' : '#d1fae5' }]}
+              onPress={() => handleStatPress('present', getPresentDaysData())}
+            >
               <MaterialCommunityIcons name="check-circle" size={24} color="#10b981" />
               <Text style={[styles.statNumber, { color: isDark ? '#fff' : '#1e293b' }]}>
                 {stats.presentDays}
@@ -693,9 +861,13 @@ export default function HistoryScreen({ route, navigation }) {
               <Text style={[styles.statLabel, { color: isDark ? '#94a3b8' : '#64748b' }]}>
                 Days Present
               </Text>
-            </View>
+            </Pressable>
 
-            <View style={[styles.statCard, { backgroundColor: isDark ? 'rgba(168, 85, 247, 0.1)' : '#f3e8ff' }]}>
+            {/* Leave Days Card */}
+            <Pressable 
+              style={[styles.statCard, { backgroundColor: isDark ? 'rgba(168, 85, 247, 0.1)' : '#f3e8ff' }]}
+              onPress={() => handleStatPress('leave', getLeaveDaysData())}
+            >
               <MaterialCommunityIcons name="beach" size={24} color="#a855f7" />
               <Text style={[styles.statNumber, { color: isDark ? '#fff' : '#1e293b' }]}>
                 {stats.leaveDays}
@@ -703,9 +875,13 @@ export default function HistoryScreen({ route, navigation }) {
               <Text style={[styles.statLabel, { color: isDark ? '#94a3b8' : '#64748b' }]}>
                 Leave Days
               </Text>
-            </View>
+            </Pressable>
 
-            <View style={[styles.statCard, { backgroundColor: isDark ? 'rgba(245, 158, 11, 0.1)' : '#fef3c7' }]}>
+            {/* Total Hours Card */}
+            <Pressable 
+              style={[styles.statCard, { backgroundColor: isDark ? 'rgba(245, 158, 11, 0.1)' : '#fef3c7' }]}
+              onPress={() => handleStatPress('hours', getHoursData())}
+            >
               <MaterialCommunityIcons name="clock" size={24} color="#f59e0b" />
               <Text style={[styles.statNumber, { color: isDark ? '#fff' : '#1e293b' }]}>
                 {stats.totalHours.toFixed(1)}
@@ -713,7 +889,7 @@ export default function HistoryScreen({ route, navigation }) {
               <Text style={[styles.statLabel, { color: isDark ? '#94a3b8' : '#64748b' }]}>
                 Total Hours
               </Text>
-            </View>
+            </Pressable>
           </View>
 
           {/* Calendar Heatmap */}
@@ -1062,6 +1238,44 @@ export default function HistoryScreen({ route, navigation }) {
           </Pressable>
         </Animated.View>
       </ScrollView>
+
+      {/* Modal for displaying detailed information */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={modalVisible}
+        onRequestClose={() => setModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: isDark ? '#1e293b' : '#fff' }]}>
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: isDark ? '#fff' : '#1e293b' }]}>
+                {modalTitle}
+              </Text>
+              <Pressable onPress={() => setModalVisible(false)}>
+                <MaterialCommunityIcons name="close" size={24} color={isDark ? '#94a3b8' : '#64748b'} />
+              </Pressable>
+            </View>
+            
+            {modalData.length > 0 ? (
+              <FlatList
+                data={modalData}
+                renderItem={renderModalItem}
+                keyExtractor={(item, index) => index.toString()}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={styles.modalList}
+              />
+            ) : (
+              <View style={styles.modalEmpty}>
+                <MaterialCommunityIcons name="alert-circle-outline" size={48} color={isDark ? '#475569' : '#cbd5e1'} />
+                <Text style={[styles.modalEmptyText, { color: isDark ? '#94a3b8' : '#64748b' }]}>
+                  No data available
+                </Text>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1633,5 +1847,74 @@ const styles = StyleSheet.create({
     color: "#ef4444",
     fontSize: 16,
     fontWeight: "600",
+  },
+  // Modal Styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    maxHeight: '80%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(148, 163, 184, 0.2)',
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  modalList: {
+    paddingBottom: 20,
+  },
+  modalItem: {
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+  },
+  modalItemHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  modalItemDate: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  modalItemDetails: {
+    marginLeft: 28,
+    gap: 8,
+  },
+  modalDetailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  modalDetailLabel: {
+    fontSize: 13,
+    fontWeight: '500',
+    width: 70,
+  },
+  modalDetailValue: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  modalEmpty: {
+    alignItems: 'center',
+    padding: 40,
+    gap: 12,
+  },
+  modalEmptyText: {
+    fontSize: 15,
+    textAlign: 'center',
   },
 });
