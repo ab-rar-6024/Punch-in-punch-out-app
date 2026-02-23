@@ -9,7 +9,6 @@ import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  AppState,
   Dimensions,
   Modal,
   Platform,
@@ -42,11 +41,9 @@ export default function LoginScreen({ navigation }) {
   const [showPinModal, setShowPinModal] = useState(false);
   const [currentLocation, setCurrentLocation] = useState(null);
   const [selectedUser, setSelectedUser] = useState(null);
-  const [isLocked, setIsLocked] = useState(false);
-
+  
   const boxes = useRef([]);
   const loginBoxes = useRef([]);
-  const appState = useRef(AppState.currentState);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -54,25 +51,6 @@ export default function LoginScreen({ navigation }) {
     loadRegisteredUsers();
     requestLocationPermission();
     return () => clearInterval(timer);
-  }, []);
-
-  // AppState listener — lock immediately on resume
-  useEffect(() => {
-    const subscription = AppState.addEventListener("change", (nextAppState) => {
-      if (
-        appState.current === "active" &&
-        nextAppState.match(/inactive|background/)
-      ) {
-        // App going to background — set lock immediately
-        setIsLocked(true);
-        setShowPinModal(false);
-        setPin(["", "", "", ""]);
-      }
-
-      appState.current = nextAppState;
-    });
-
-    return () => subscription.remove();
   }, []);
 
   const requestLocationPermission = async () => {
@@ -84,18 +62,18 @@ export default function LoginScreen({ navigation }) {
 
   const getCurrentLocation = async () => {
     try {
-      const location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced
+      const location = await Location.getCurrentPositionAsync({ 
+        accuracy: Location.Accuracy.Balanced 
       });
-      const address = await Location.reverseGeocodeAsync({
-        latitude: location.coords.latitude,
-        longitude: location.coords.longitude
+      const address = await Location.reverseGeocodeAsync({ 
+        latitude: location.coords.latitude, 
+        longitude: location.coords.longitude 
       });
       const locationData = {
         latitude: location.coords.latitude,
         longitude: location.coords.longitude,
-        address: address[0]
-          ? `${address[0].city || ''}, ${address[0].region || ''}`
+        address: address[0] 
+          ? `${address[0].city || ''}, ${address[0].region || ''}` 
           : 'Location Active',
       };
       setCurrentLocation(locationData);
@@ -109,8 +87,8 @@ export default function LoginScreen({ navigation }) {
     if (compatible && enrolled) {
       setBiometricAvailable(true);
       setBiometricType(
-        types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION)
-          ? "Face ID"
+        types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION) 
+          ? "Face ID" 
           : "Touch ID"
       );
     }
@@ -148,7 +126,7 @@ export default function LoginScreen({ navigation }) {
     const next = [...pin];
     next[idx] = v;
     setPin(next);
-
+    
     if (v && idx < 3) {
       const nextRef = isLogin ? loginBoxes.current[idx + 1] : boxes.current[idx + 1];
       nextRef?.focus();
@@ -170,10 +148,9 @@ export default function LoginScreen({ navigation }) {
       if (!auth?.success) throw new Error(auth.msg || "Invalid PIN entered.");
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setIsLocked(false);
       setShowPinModal(false);
       setPin(["", "", "", ""]);
-
+      
       const role = (auth.role || "").toLowerCase();
       if (role === "employee") {
         const hist = await getHistory(auth.user.id);
@@ -193,24 +170,28 @@ export default function LoginScreen({ navigation }) {
   const handleBiometricLogin = async () => {
     if (!biometricAvailable || registeredUsers.length === 0) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-      Alert.alert("Setup Required", "Please register your biometric first.");
+      Alert.alert(
+        "Setup Required", 
+        "Please register your biometric first."
+      );
       return;
     }
 
     try {
       setBusy(true);
-
+      
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: "Authenticate to login",
         fallbackLabel: "Use PIN",
         cancelLabel: "Cancel"
       });
-
+      
       if (!result.success) {
         setBusy(false);
         return;
       }
 
+      // Try to login with each registered user's PIN
       let loggedIn = false;
       for (const user of registeredUsers) {
         try {
@@ -218,8 +199,7 @@ export default function LoginScreen({ navigation }) {
           if (auth?.success) {
             loggedIn = true;
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            setIsLocked(false);
-
+            
             const role = (auth.role || "").toLowerCase();
             if (role === "employee") {
               const hist = await getHistory(auth.user.id);
@@ -230,14 +210,14 @@ export default function LoginScreen({ navigation }) {
             break;
           }
         } catch (error) {
-          continue;
+          continue; // Try next user
         }
       }
-
+      
       if (!loggedIn) {
         throw new Error("No matching user found. Please login with PIN.");
       }
-
+      
       setBusy(false);
     } catch (error) {
       setBusy(false);
@@ -246,33 +226,81 @@ export default function LoginScreen({ navigation }) {
     }
   };
 
+  const registerNewUser = async () => {
+    if (pin.some(d => d === "")) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Incomplete PIN", "Please enter your 4-digit PIN.");
+      return;
+    }
+    try {
+      setBusy(true);
+      const auth = await loginByPin(pin.join(""));
+      if (!auth?.success) throw new Error("Verification Failed");
+      
+      // Check if user already registered
+      if (registeredUsers.some(u => u.id === auth.user.id)) {
+        setBusy(false);
+        Alert.alert("Already Registered", "This user is already registered.");
+        setPin(["", "", "", ""]);
+        return;
+      }
+      
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: `Link ${biometricType} for ${auth.user.name}`,
+      });
+      
+      if (result.success) {
+        const newUser = { 
+          id: auth.user.id, 
+          name: auth.user.name, 
+          emp_code: auth.user.emp_code, 
+          pin: pin.join(""),
+          role: auth.role || "employee"
+        };
+        const newUsers = [...registeredUsers, newUser];
+        await AsyncStorage.setItem("registered_users", JSON.stringify(newUsers));
+        setRegisteredUsers(newUsers);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setNote(`${biometricType} successfully linked for ${auth.user.name}`);
+        setPin(["", "", "", ""]);
+        
+        setTimeout(() => setNote(""), 4000);
+      }
+      setBusy(false);
+    } catch (e) {
+      setBusy(false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Registration Failed", e.message);
+    }
+  };
+
   const biometricPunch = async (type) => {
     if (!biometricAvailable || registeredUsers.length === 0) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       Alert.alert(
-        "Setup Required",
+        "Setup Required", 
         `Please register your ${biometricType || "biometric"} first.`
       );
       return;
     }
-
+    
     try {
       setBusy(true);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-
-      const res = await LocalAuthentication.authenticateAsync({
+      
+      const res = await LocalAuthentication.authenticateAsync({ 
         promptMessage: `Authenticate to punch ${type.toUpperCase()}`,
         fallbackLabel: "Use PIN"
       });
-
-      if (!res.success) {
-        setBusy(false);
-        return;
+      
+      if (!res.success) { 
+        setBusy(false); 
+        return; 
       }
 
       const location = currentLocation || await getCurrentLocation();
       let punched = false;
-
+      
       for (const user of registeredUsers) {
         try {
           const punchRes = await punchActionMobile(user.pin, type, location);
@@ -280,7 +308,7 @@ export default function LoginScreen({ navigation }) {
             punched = true;
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             Alert.alert(
-              "Success",
+              "Success", 
               `${user.name} checked ${type.toUpperCase()} at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`
             );
             break;
@@ -289,7 +317,7 @@ export default function LoginScreen({ navigation }) {
           continue;
         }
       }
-
+      
       if (!punched) throw new Error("No matching user found.");
       setBusy(false);
     } catch (e) {
@@ -300,144 +328,50 @@ export default function LoginScreen({ navigation }) {
   };
 
   const formatTime = () => {
-    return currentTime.toLocaleTimeString('en-US', {
-      hour: '2-digit',
+    return currentTime.toLocaleTimeString('en-US', { 
+      hour: '2-digit', 
       minute: '2-digit',
       hour12: true
     });
   };
 
   const formatDate = () => {
-    return currentTime.toLocaleDateString('en-US', {
+    return currentTime.toLocaleDateString('en-US', { 
       weekday: 'long',
-      month: 'long',
-      day: 'numeric'
+      month: 'long', 
+      day: 'numeric' 
     });
   };
 
-  // ─── LOCK SCREEN ────────────────────────────────────────────────────────────
-  if (isLocked) {
-    return (
-      <>
-        <StatusBar barStyle="light-content" />
-        <LinearGradient
-          colors={["#0a0a0a", "#1a1a2e", "#16213e"]}
-          style={styles.page}
-        >
-          <View style={styles.lockScreen}>
-            {/* Lock Icon */}
-            <Animated.View entering={FadeInDown.delay(100).springify()} style={styles.lockIconWrapper}>
-              <LinearGradient
-                colors={['#3b82f6', '#2563eb']}
-                style={styles.lockIconGradient}
-              >
-                <MaterialCommunityIcons name="lock" size={48} color="#fff" />
-              </LinearGradient>
-            </Animated.View>
-
-            {/* Time on lock screen */}
-            <Animated.View entering={FadeInDown.delay(150).springify()} style={styles.lockTimeSection}>
-              <Text style={styles.lockTime}>{formatTime()}</Text>
-              <Text style={styles.lockDate}>{formatDate()}</Text>
-            </Animated.View>
-
-            <Animated.View entering={FadeInDown.delay(200).springify()} style={styles.lockTextSection}>
-              <Text style={styles.lockTitle}>Session Locked</Text>
-              <Text style={styles.lockSubtitle}>
-                Authenticate to continue
-              </Text>
-            </Animated.View>
-
-            {/* Biometric unlock button */}
-            {biometricAvailable && registeredUsers.length > 0 && (
-              <Animated.View entering={FadeInDown.delay(300).springify()} style={{ width: '100%' }}>
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.lockBiometricBtn,
-                    pressed && styles.lockBiometricBtnPressed,
-                    busy && { opacity: 0.6 }
-                  ]}
-                  onPress={handleBiometricLogin}
-                  disabled={busy}
-                >
-                  <LinearGradient
-                    colors={['#3b82f6', '#2563eb']}
-                    style={styles.lockBiometricGradient}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                  >
-                    {busy ? (
-                      <ActivityIndicator color="#fff" />
-                    ) : (
-                      <>
-                        <MaterialCommunityIcons
-                          name={biometricType === "Face ID" ? "face-recognition" : "fingerprint"}
-                          size={24}
-                          color="#fff"
-                        />
-                        <Text style={styles.lockBiometricText}>
-                          Unlock with {biometricType}
-                        </Text>
-                      </>
-                    )}
-                  </LinearGradient>
-                </Pressable>
-              </Animated.View>
-            )}
-
-            {/* PIN fallback */}
-            <Animated.View entering={FadeInDown.delay(350).springify()}>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.lockPinLink,
-                  pressed && { opacity: 0.6 }
-                ]}
-                onPress={() => {
-                  setIsLocked(false);
-                  setPin(["", "", "", ""]);
-                  setShowPinModal(true);
-                }}
-              >
-                <MaterialCommunityIcons name="lock-outline" size={16} color="#94a3b8" />
-                <Text style={styles.lockPinText}>Use PIN instead</Text>
-              </Pressable>
-            </Animated.View>
-          </View>
-        </LinearGradient>
-      </>
-    );
-  }
-
-  // ─── MAIN SCREEN ────────────────────────────────────────────────────────────
   return (
     <>
       <StatusBar barStyle="light-content" />
-      <LinearGradient
-        colors={["#0a0a0a", "#1a1a2e", "#16213e"]}
+      <LinearGradient 
+        colors={["#0a0a0a", "#1a1a2e", "#16213e"]} 
         style={styles.page}
       >
-        <ScrollView
+        <ScrollView 
           contentContainerStyle={styles.scrollContainer}
           showsVerticalScrollIndicator={false}
         >
-
-          {/* Time Display */}
-          <Animated.View
-            entering={FadeInDown.delay(100).springify()}
+          
+          {/* Time Display - Top Center */}
+          <Animated.View 
+            entering={FadeInDown.delay(100).springify()} 
             style={styles.timeSection}
           >
             <Text style={styles.currentTime}>{formatTime()}</Text>
             <Text style={styles.currentDate}>{formatDate()}</Text>
             <Text style={styles.greeting}>Good {
-              currentTime.getHours() < 12 ? 'Morning' :
+              currentTime.getHours() < 12 ? 'Morning' : 
               currentTime.getHours() < 18 ? 'Afternoon' : 'Evening'
             }</Text>
           </Animated.View>
 
           {/* Location Info */}
           {currentLocation && (
-            <Animated.View
-              entering={FadeIn.delay(200)}
+            <Animated.View 
+              entering={FadeIn.delay(200)} 
               style={styles.locationCard}
             >
               <View style={styles.locationIconWrapper}>
@@ -451,17 +385,17 @@ export default function LoginScreen({ navigation }) {
           )}
 
           {/* Brand */}
-          <Animated.View
-            entering={FadeInDown.delay(250).springify()}
+          <Animated.View 
+            entering={FadeInDown.delay(250).springify()} 
             style={styles.brandSection}
           >
             <Text style={styles.brandTitle}>InstantLog</Text>
             <Text style={styles.brandSubtitle}>Biometric Attendance System</Text>
           </Animated.View>
 
-          {/* Punch Actions */}
-          <Animated.View
-            entering={FadeInDown.delay(300).springify()}
+          {/* Punch Actions - Side by Side */}
+          <Animated.View 
+            entering={FadeInDown.delay(300).springify()} 
             style={styles.punchContainer}
           >
             <Pressable
@@ -510,21 +444,21 @@ export default function LoginScreen({ navigation }) {
           </Animated.View>
 
           {/* Biometric Registration Section */}
-          <Animated.View
-            entering={FadeInDown.delay(350).springify()}
+          <Animated.View 
+            entering={FadeInDown.delay(350).springify()} 
             style={styles.registrationSection}
           >
             <View style={styles.sectionHeader}>
               <View style={styles.biometricBadge}>
-                <MaterialCommunityIcons
-                  name={biometricType === "Face ID" ? "face-recognition" : "fingerprint"}
-                  size={16}
-                  color="#3b82f6"
+                <MaterialCommunityIcons 
+                  name={biometricType === "Face ID" ? "face-recognition" : "fingerprint"} 
+                  size={16} 
+                  color="#3b82f6" 
                 />
                 <Text style={styles.biometricBadgeText}>Register New User</Text>
               </View>
             </View>
-
+            
             <Text style={styles.sectionTitle}>Add Biometric Login</Text>
             <Text style={styles.sectionDescription}>
               Enter your PIN to link biometric authentication for login and punch
@@ -564,51 +498,7 @@ export default function LoginScreen({ navigation }) {
                 pressed && styles.registerBtnPressed,
                 busy && styles.registerBtnDisabled
               ]}
-              onPress={async () => {
-                if (pin.some(d => d === "")) {
-                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-                  Alert.alert("Incomplete PIN", "Please enter your 4-digit PIN.");
-                  return;
-                }
-                try {
-                  setBusy(true);
-                  const auth = await loginByPin(pin.join(""));
-                  if (!auth?.success) throw new Error("Verification Failed");
-
-                  if (registeredUsers.some(u => u.id === auth.user.id)) {
-                    setBusy(false);
-                    Alert.alert("Already Registered", "This user is already registered.");
-                    setPin(["", "", "", ""]);
-                    return;
-                  }
-
-                  const result = await LocalAuthentication.authenticateAsync({
-                    promptMessage: `Link ${biometricType} for ${auth.user.name}`,
-                  });
-
-                  if (result.success) {
-                    const newUser = {
-                      id: auth.user.id,
-                      name: auth.user.name,
-                      emp_code: auth.user.emp_code,
-                      pin: pin.join(""),
-                      role: auth.role || "employee"
-                    };
-                    const newUsers = [...registeredUsers, newUser];
-                    await AsyncStorage.setItem("registered_users", JSON.stringify(newUsers));
-                    setRegisteredUsers(newUsers);
-                    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                    setNote(`${biometricType} successfully linked for ${auth.user.name}`);
-                    setPin(["", "", "", ""]);
-                    setTimeout(() => setNote(""), 4000);
-                  }
-                  setBusy(false);
-                } catch (e) {
-                  setBusy(false);
-                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-                  Alert.alert("Registration Failed", e.message);
-                }
-              }}
+              onPress={registerNewUser}
               disabled={busy}
             >
               {busy ? (
@@ -624,8 +514,8 @@ export default function LoginScreen({ navigation }) {
 
           {/* Registered Users List */}
           {registeredUsers.length > 0 && (
-            <Animated.View
-              entering={FadeInDown.delay(400).springify()}
+            <Animated.View 
+              entering={FadeInDown.delay(400).springify()} 
               style={styles.usersSection}
             >
               <View style={styles.usersSectionHeader}>
@@ -634,10 +524,10 @@ export default function LoginScreen({ navigation }) {
                   <Text style={styles.usersCountText}>{registeredUsers.length}</Text>
                 </View>
               </View>
-
+              
               {registeredUsers.map((user, idx) => (
-                <Animated.View
-                  key={idx}
+                <Animated.View 
+                  key={idx} 
                   entering={FadeIn.delay(450 + idx * 50)}
                   style={styles.userItem}
                 >
@@ -667,11 +557,12 @@ export default function LoginScreen({ navigation }) {
             </Animated.View>
           )}
 
-          {/* Login Options */}
-          <Animated.View
-            entering={FadeInDown.delay(500).springify()}
+          {/* Login Options - Moved below Registered Users */}
+          <Animated.View 
+            entering={FadeInDown.delay(500).springify()} 
             style={styles.loginOptionsContainer}
           >
+            {/* Biometric Login - Clean Button without count */}
             <Pressable
               style={({ pressed }) => [
                 styles.biometricLoginButton,
@@ -687,10 +578,10 @@ export default function LoginScreen({ navigation }) {
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
               >
-                <MaterialCommunityIcons
-                  name={biometricType === "Face ID" ? "face-recognition" : "fingerprint"}
-                  size={24}
-                  color="#fff"
+                <MaterialCommunityIcons 
+                  name={biometricType === "Face ID" ? "face-recognition" : "fingerprint"} 
+                  size={24} 
+                  color="#fff" 
                 />
                 <Text style={styles.biometricLoginText}>
                   Login with {biometricType || "Biometric"}
@@ -698,6 +589,7 @@ export default function LoginScreen({ navigation }) {
               </LinearGradient>
             </Pressable>
 
+            {/* PIN Login - Text Link */}
             <Pressable
               style={({ pressed }) => [
                 styles.pinLoginLink,
@@ -717,7 +609,7 @@ export default function LoginScreen({ navigation }) {
 
         </ScrollView>
 
-        {/* PIN Login Modal */}
+        {/* PIN Login Modal - Fallback */}
         <Modal
           visible={showPinModal}
           animationType="fade"
@@ -725,20 +617,20 @@ export default function LoginScreen({ navigation }) {
           statusBarTranslucent
         >
           <BlurView intensity={100} style={styles.modalOverlay}>
-            <Pressable
-              style={styles.modalBackdrop}
+            <Pressable 
+              style={styles.modalBackdrop} 
               onPress={() => {
                 setShowPinModal(false);
                 setPin(["", "", "", ""]);
-              }}
+              }} 
             />
-
-            <Animated.View
-              entering={SlideInDown.springify().damping(20)}
+            
+            <Animated.View 
+              entering={SlideInDown.springify().damping(20)} 
               style={styles.modalContent}
             >
               <View style={styles.modalHandle} />
-
+              
               <View style={styles.modalHeader}>
                 <View style={styles.modalIconWrapper}>
                   <LinearGradient
@@ -814,110 +706,16 @@ export default function LoginScreen({ navigation }) {
 }
 
 const styles = StyleSheet.create({
-  page: {
+  page: { 
     flex: 1,
   },
-  scrollContainer: {
+  scrollContainer: { 
     paddingTop: Platform.OS === 'ios' ? 60 : 40,
     paddingHorizontal: 20,
     paddingBottom: 20,
   },
-
-  // ── Lock Screen ──────────────────────────────────────────────────────────────
-  lockScreen: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 32,
-    gap: 20,
-  },
-  lockIconWrapper: {
-    marginBottom: 8,
-  },
-  lockIconGradient: {
-    width: 100,
-    height: 100,
-    borderRadius: 32,
-    justifyContent: 'center',
-    alignItems: 'center',
-    elevation: 12,
-    shadowColor: '#3b82f6',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
-  },
-  lockTimeSection: {
-    alignItems: 'center',
-  },
-  lockTime: {
-    fontSize: 52,
-    fontWeight: '300',
-    color: '#ffffff',
-    letterSpacing: -3,
-  },
-  lockDate: {
-    fontSize: 15,
-    color: '#94a3b8',
-    fontWeight: '400',
-    marginTop: 4,
-  },
-  lockTextSection: {
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  lockTitle: {
-    fontSize: 26,
-    fontWeight: '700',
-    color: '#ffffff',
-    marginBottom: 8,
-  },
-  lockSubtitle: {
-    fontSize: 15,
-    color: '#64748b',
-    textAlign: 'center',
-    lineHeight: 22,
-  },
-  lockBiometricBtn: {
-    height: 60,
-    borderRadius: 18,
-    overflow: 'hidden',
-    elevation: 8,
-    shadowColor: '#3b82f6',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 8,
-  },
-  lockBiometricBtnPressed: {
-    transform: [{ scale: 0.98 }],
-    opacity: 0.95,
-  },
-  lockBiometricGradient: {
-    flex: 1,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 10,
-  },
-  lockBiometricText: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#ffffff',
-    letterSpacing: 0.3,
-  },
-  lockPinLink: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
-    gap: 6,
-  },
-  lockPinText: {
-    fontSize: 14,
-    color: '#94a3b8',
-    fontWeight: '500',
-  },
-
-  // ── Time Section ─────────────────────────────────────────────────────────────
+  
+  // Time Section
   timeSection: {
     alignItems: 'center',
     marginBottom: 24,
@@ -942,7 +740,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
 
-  // ── Location Card ─────────────────────────────────────────────────────────────
+  // Location Card
   locationCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -980,7 +778,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
-  // ── Brand Section ─────────────────────────────────────────────────────────────
+  // Brand Section
   brandSection: {
     alignItems: 'center',
     marginBottom: 32,
@@ -998,7 +796,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 
-  // ── Punch Actions ─────────────────────────────────────────────────────────────
+  // Punch Actions
   punchContainer: {
     flexDirection: 'row',
     gap: 12,
@@ -1046,7 +844,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  // ── Registration Section ──────────────────────────────────────────────────────
+  // Registration Section
   registrationSection: {
     backgroundColor: 'rgba(30, 41, 59, 0.4)',
     borderRadius: 24,
@@ -1165,7 +963,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
 
-  // ── Users Section ─────────────────────────────────────────────────────────────
+  // Users Section
   usersSection: {
     backgroundColor: 'rgba(30, 41, 59, 0.4)',
     borderRadius: 24,
@@ -1270,11 +1068,13 @@ const styles = StyleSheet.create({
     transform: [{ scale: 0.95 }],
   },
 
-  // ── Login Options ─────────────────────────────────────────────────────────────
+  // Login Options Container
   loginOptionsContainer: {
     marginTop: 8,
     marginBottom: 16,
   },
+
+  // Biometric Login Button - Clean version without count
   biometricLoginButton: {
     height: 56,
     borderRadius: 16,
@@ -1306,6 +1106,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#ffffff',
   },
+
+  // PIN Login - Text Link
   pinLoginLink: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1322,7 +1124,7 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
-  // ── Modal ─────────────────────────────────────────────────────────────────────
+  // Modal Styles (unchanged)
   modalOverlay: {
     flex: 1,
     justifyContent: 'flex-end',
