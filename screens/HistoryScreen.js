@@ -21,7 +21,7 @@ dayjs.extend(customParseFormat);
 
 const { width } = Dimensions.get("window");
 const CALENDAR_WIDTH = width - 40;
-const DAY_SIZE = (CALENDAR_WIDTH - 48) / 7;
+const DAY_SIZE = Math.floor((CALENDAR_WIDTH - 64) / 7);
 
 export default function HistoryScreen({ route, navigation }) {
   const { isDark } = useTheme();
@@ -1578,7 +1578,7 @@ const styles = StyleSheet.create({
   weekDayText: {
     fontSize: 14,
     fontWeight: '500',
-    width: DAY_SIZE,
+    width: Math.floor((CALENDAR_WIDTH - 64) / 7),
     textAlign: 'center',
   },
   calendarGrid: {
