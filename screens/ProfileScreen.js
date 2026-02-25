@@ -3,6 +3,8 @@ import { BlurView } from "expo-blur";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from "expo-linear-gradient";
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -20,8 +22,15 @@ import {
   Text,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context"; // Import from safe-area-context
-import { BASE_URL, deleteProfilePicture, getEmployeeProfile, getUserPhoto, updateProfilePicture } from "../api";
+import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+  BASE_URL,
+  deleteProfilePicture,
+  getEmployeeAttendance,
+  getEmployeeProfile,
+  getUserPhoto,
+  updateProfilePicture
+} from "../api";
 import { useTheme } from "./ThemeContext";
 
 const { width } = Dimensions.get("window");
@@ -36,11 +45,19 @@ export default function ProfileScreen({ navigation, route }) {
   const [showAboutModal, setShowAboutModal] = useState(false);
   const [showPrivacyModal, setShowPrivacyModal] = useState(false);
   const [showTermsModal, setShowTermsModal] = useState(false);
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [isConnected, setIsConnected] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [showPhotoOptions, setShowPhotoOptions] = useState(false);
   const [profileImage, setProfileImage] = useState(null);
+  const [attendanceData, setAttendanceData] = useState([]);
+  
+  // Report selection states
+  const [reportType, setReportType] = useState('monthly');
+  const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
+  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
 
   const scrollY = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(1)).current;
@@ -62,11 +79,9 @@ export default function ProfileScreen({ navigation, route }) {
   // SCROLL TO TOP WHEN TAB BECOMES ACTIVE
   React.useEffect(() => {
     const unsubscribe = navigation.addListener('focus', () => {
-      // Immediately scroll to top when tab becomes active
       if (scrollViewRef.current) {
         scrollViewRef.current.scrollTo({ y: 0, animated: false });
       }
-      // Reset scroll position
       scrollY.setValue(0);
     });
 
@@ -94,6 +109,35 @@ export default function ProfileScreen({ navigation, route }) {
       }
     })();
   }, []);
+
+  // Fetch attendance data when user is loaded
+  useEffect(() => {
+    if (user && user.id) {
+      fetchAttendanceData();
+    }
+  }, [user]);
+
+  const fetchAttendanceData = async () => {
+    try {
+      console.log("Fetching attendance for user:", user.id);
+      const data = await getEmployeeAttendance(user.id);
+      
+      if (data && data.attendance) {
+        const transformedData = data.attendance.map(record => ({
+          ...record,
+          isLeave: record.absent === true,
+          leaveType: record.absent ? 'Full Day' : null,
+          leaveReason: record.reason || null
+        }));
+        setAttendanceData(transformedData);
+      } else {
+        setAttendanceData([]);
+      }
+    } catch (error) {
+      console.error('Error fetching attendance:', error);
+      setAttendanceData([]);
+    }
+  };
 
   // Handle scroll
   const handleScroll = Animated.event(
@@ -145,7 +189,445 @@ export default function ProfileScreen({ navigation, route }) {
     }).start();
   };
 
-  // Photo Upload Functions
+  // Calculate duration in hours
+  const calculateDurationInHours = (timeIn, timeOut) => {
+    if (!timeIn || !timeOut) return 0;
+    try {
+      const parseTime = (timeStr) => {
+        const [time, modifier] = timeStr.split(' ');
+        let [hours, minutes] = time.split(':').map(Number);
+        
+        if (modifier) {
+          if (modifier === 'PM' && hours < 12) hours += 12;
+          if (modifier === 'AM' && hours === 12) hours = 0;
+        }
+        
+        return hours + minutes / 60;
+      };
+      
+      let start = parseTime(timeIn);
+      let end = parseTime(timeOut);
+      
+      if (end < start) end += 24;
+      
+      return end - start;
+    } catch {
+      return 0;
+    }
+  };
+
+  // Format time
+  const formatTime = (timeStr) => {
+    if (!timeStr) return '—';
+    return timeStr;
+  };
+
+  // Get data for selected month
+  const getSelectedMonthData = () => {
+    if (!attendanceData || attendanceData.length === 0) {
+      return [];
+    }
+    
+    return attendanceData.filter(record => {
+      if (!record || !record.date) return false;
+      const recordDate = new Date(record.date);
+      return recordDate.getMonth() === selectedMonth && 
+             recordDate.getFullYear() === selectedYear;
+    });
+  };
+
+  // Get all data for overall report
+  const getAllData = () => {
+    return attendanceData || [];
+  };
+
+  // Calculate statistics for any data set
+  const calculateStats = (data) => {
+    const totalDays = data.length;
+    const presentDays = data.filter(d => !d.isLeave && d.time_in && d.time_out).length;
+    const leaveDays = data.filter(d => d.isLeave).length;
+    const totalHours = data.reduce((sum, day) => {
+      if (!day.isLeave && day.time_in && day.time_out) {
+        return sum + calculateDurationInHours(day.time_in, day.time_out);
+      }
+      return sum;
+    }, 0);
+    
+    return { totalDays, presentDays, leaveDays, totalHours };
+  };
+
+  // Get month name
+  const getMonthName = (monthIndex) => {
+    const months = ['January', 'February', 'March', 'April', 'May', 'June', 
+                   'July', 'August', 'September', 'October', 'November', 'December'];
+    return months[monthIndex];
+  };
+
+  // Get short month name for filename
+  const getShortMonthName = (monthIndex) => {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return months[monthIndex];
+  };
+
+  // Generate filename based on report type
+  const generateFilename = () => {
+    const safeName = user?.name?.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'employee';
+    const today = new Date();
+    const dateStr = today.toISOString().split('T')[0];
+    
+    if (reportType === 'monthly') {
+      const monthName = getMonthName(selectedMonth);
+      const shortMonth = getShortMonthName(selectedMonth);
+      const year = selectedYear;
+      
+      // Multiple filename options - choose one that suits you
+      return {
+        simple: `${safeName}_${shortMonth}_${year}.pdf`,
+        detailed: `${safeName}_Monthly_Report_${monthName}_${year}.pdf`,
+        withDate: `${safeName}_${monthName}_${year}_Generated_${dateStr}.pdf`,
+        formatted: `${monthName}_${year}_Attendance_Report_${safeName}.pdf`
+      };
+    } else {
+      // Overall report filenames
+      const totalDays = attendanceData.length;
+      
+      return {
+        simple: `${safeName}_Complete_History.pdf`,
+        detailed: `${safeName}_Overall_Attendance_Report.pdf`,
+        withDate: `${safeName}_Complete_History_${dateStr}.pdf`,
+        formatted: `Complete_Attendance_History_${safeName}_${dateStr}.pdf`
+      };
+    }
+  };
+
+  // Change month
+  const changeMonth = (direction) => {
+    if (direction === 'prev') {
+      if (selectedMonth === 0) {
+        setSelectedMonth(11);
+        setSelectedYear(selectedYear - 1);
+      } else {
+        setSelectedMonth(selectedMonth - 1);
+      }
+    } else {
+      if (selectedMonth === 11) {
+        setSelectedMonth(0);
+        setSelectedYear(selectedYear + 1);
+      } else {
+        setSelectedMonth(selectedMonth + 1);
+      }
+    }
+  };
+
+  // Generate PDF Report with custom filename
+  const generatePDFReport = async () => {
+    if (!user) {
+      Alert.alert('Error', 'User not found');
+      return;
+    }
+
+    setDownloading(true);
+    setShowReportModal(false);
+
+    try {
+      let reportData = [];
+      let reportTitle = '';
+      let reportPeriod = '';
+      let filename = '';
+      
+      if (reportType === 'monthly') {
+        reportData = getSelectedMonthData();
+        const monthName = getMonthName(selectedMonth);
+        const shortMonth = getShortMonthName(selectedMonth);
+        const year = selectedYear;
+        reportTitle = `${monthName} ${year} Attendance Report - ${user.name}`;
+        reportPeriod = `${monthName} ${year}`;
+        filename = `${user.name?.replace(/\s+/g, '_')}_${monthName}_${year}_Report.pdf`;
+      } else {
+        reportData = getAllData();
+        const totalDays = reportData.length;
+        reportTitle = `Complete Attendance History - ${user.name}`;
+        reportPeriod = 'All Time';
+        const today = new Date();
+        const dateStr = today.toISOString().split('T')[0];
+        filename = `${user.name?.replace(/\s+/g, '_')}_Complete_History_${dateStr}.pdf`;
+      }
+
+      const stats = calculateStats(reportData);
+      const now = new Date();
+
+      // Create HTML content for PDF (same as before)
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <title>${reportTitle}</title>
+          <style>
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+              padding: 30px;
+              background: #ffffff;
+            }
+            .header {
+              text-align: center;
+              margin-bottom: 30px;
+              padding-bottom: 20px;
+              border-bottom: 3px solid #007AFF;
+            }
+            .title {
+              font-size: 28px;
+              font-weight: bold;
+              color: #007AFF;
+              margin-bottom: 10px;
+            }
+            .subtitle {
+              font-size: 16px;
+              color: #666666;
+            }
+            .company-name {
+              font-size: 14px;
+              color: #999999;
+              margin-top: 5px;
+            }
+            .info-section {
+              background: #f8f9fa;
+              padding: 20px;
+              border-radius: 12px;
+              margin-bottom: 30px;
+            }
+            .info-grid {
+              display: flex;
+              flex-wrap: wrap;
+              gap: 15px;
+            }
+            .info-item {
+              flex: 1;
+              min-width: 200px;
+            }
+            .info-label {
+              font-size: 12px;
+              color: #666666;
+              margin-bottom: 4px;
+            }
+            .info-value {
+              font-size: 16px;
+              font-weight: 600;
+              color: #333333;
+            }
+            .stats-grid {
+              display: flex;
+              flex-wrap: wrap;
+              gap: 15px;
+              margin-bottom: 30px;
+            }
+            .stat-card {
+              flex: 1;
+              min-width: 120px;
+              background: #f3f4f6;
+              padding: 20px;
+              border-radius: 12px;
+              text-align: center;
+            }
+            .stat-number {
+              font-size: 32px;
+              font-weight: bold;
+              color: #007AFF;
+              margin-bottom: 5px;
+            }
+            .stat-label {
+              font-size: 12px;
+              color: #666666;
+            }
+            .stat-hours {
+              font-size: 24px;
+              font-weight: bold;
+              color: #f59e0b;
+              margin-bottom: 5px;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              margin-top: 20px;
+              font-size: 12px;
+            }
+            th {
+              background: #007AFF;
+              color: white;
+              padding: 12px;
+              text-align: left;
+              font-weight: 600;
+            }
+            td {
+              padding: 10px;
+              border-bottom: 1px solid #e5e7eb;
+            }
+            tr:nth-child(even) {
+              background: #f9fafb;
+            }
+            .present-row td {
+              color: #10b981;
+            }
+            .leave-row {
+              background: #FEF3C7;
+            }
+            .leave-row td {
+              color: #d97706;
+            }
+            .footer {
+              margin-top: 40px;
+              text-align: center;
+              font-size: 10px;
+              color: #999999;
+              padding-top: 20px;
+              border-top: 1px solid #e5e7eb;
+            }
+            .generated-date {
+              font-size: 11px;
+              color: #999999;
+              margin-top: 10px;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <div class="title">InstantLog Attendance Report</div>
+            <div class="subtitle">${reportPeriod}</div>
+            <div class="company-name">InstantLog Inc.</div>
+          </div>
+
+          <div class="info-section">
+            <div class="info-grid">
+              <div class="info-item">
+                <div class="info-label">Employee Name</div>
+                <div class="info-value">${user.name || 'N/A'}</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Employee ID</div>
+                <div class="info-value">${user.emp_code || 'N/A'}</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Department</div>
+                <div class="info-value">${user.department || 'N/A'}</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Designation</div>
+                <div class="info-value">${user.designation || 'N/A'}</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Report Type</div>
+                <div class="info-value">${reportType === 'monthly' ? 'Monthly' : 'Overall'} Report</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Period</div>
+                <div class="info-value">${reportPeriod}</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-number">${stats.totalDays}</div>
+              <div class="stat-label">Total Days</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-number" style="color: #10b981;">${stats.presentDays}</div>
+              <div class="stat-label">Days Present</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-number" style="color: #d97706;">${stats.leaveDays}</div>
+              <div class="stat-label">Leave Days</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-hours">${stats.totalHours.toFixed(1)}</div>
+              <div class="stat-label">Total Hours</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-hours">${stats.totalDays > 0 ? (stats.totalHours / stats.totalDays).toFixed(1) : 0}</div>
+              <div class="stat-label">Avg Hours/Day</div>
+            </div>
+          </div>
+
+          <h3 style="margin-bottom: 15px; color: #333;">Daily Attendance Details</h3>
+          
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Day</th>
+                <th>Check In</th>
+                <th>Check Out</th>
+                <th>Status</th>
+                <th>Hours</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${reportData.sort((a, b) => new Date(b.date) - new Date(a.date)).map(record => {
+                const date = new Date(record.date);
+                const dayName = date.toLocaleDateString('en-US', { weekday: 'long' });
+                const hours = !record.isLeave && record.time_in && record.time_out 
+                  ? calculateDurationInHours(record.time_in, record.time_out).toFixed(1)
+                  : '—';
+                const status = record.isLeave ? 'Leave' : (record.time_in ? 'Present' : 'Absent');
+                const rowClass = record.isLeave ? 'leave-row' : (record.time_in ? 'present-row' : '');
+                
+                return `
+                  <tr class="${rowClass}">
+                    <td>${record.date}</td>
+                    <td>${dayName}</td>
+                    <td>${formatTime(record.time_in)}</td>
+                    <td>${formatTime(record.time_out)}</td>
+                    <td>${status}</td>
+                    <td>${hours}</td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+
+          ${reportData.length === 0 ? `
+            <div style="text-align: center; padding: 40px; color: #999999;">
+              No attendance records found for this period
+            </div>
+          ` : ''}
+
+          <div class="footer">
+            <div>This report was generated automatically by InstantLog Attendance System</div>
+            <div class="generated-date">Generated on: ${new Date().toLocaleString()}</div>
+            <div>© ${new Date().getFullYear()} InstantLog Inc. All rights reserved.</div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      // Generate PDF
+      const { uri } = await Print.printToFileAsync({
+        html: htmlContent,
+        base64: false
+      });
+
+      // Share the PDF with custom filename
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, {
+          mimeType: 'application/pdf',
+          dialogTitle: reportTitle,
+          UTI: 'com.adobe.pdf'
+        });
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } else {
+        Alert.alert('Success', `PDF generated at: ${uri}`);
+      }
+
+    } catch (error) {
+      console.error('PDF generation error:', error);
+      Alert.alert('Error', 'Failed to generate PDF. Please try again.');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  // Photo Upload Functions (keep existing photo functions)
   const pickImage = async (type) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     
@@ -195,13 +677,11 @@ export default function ProfileScreen({ navigation, route }) {
     setUploading(true);
 
     try {
-      // Use numeric user.id from the state
       const response = await updateProfilePicture(user.id, uri);
 
       if (response.success) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-        // Construct absolute URL for preview
         const absUrl = response.photoUrl && response.photoUrl.startsWith('http')
           ? response.photoUrl
           : response.photoUrl ? `${BASE_URL}${response.photoUrl}` : null;
@@ -221,14 +701,12 @@ export default function ProfileScreen({ navigation, route }) {
     }
   };
 
-  // Remove Photo Function
   const handleRemovePhoto = async () => {
     if (!user || !user.id) {
       Alert.alert('Error', 'User profile not found.');
       return;
     }
 
-    // Ask for confirmation
     Alert.alert(
       "Remove Profile Photo",
       "Are you sure you want to remove your profile photo?",
@@ -357,7 +835,6 @@ Thank you for your feedback!
         if (data.success && data.user) {
           setUser(data.user);
 
-          // Fetch the active photo using the numeric user ID
           const photoRes = await getUserPhoto(data.user.id);
           if (photoRes.success && photoRes.photoUrl) {
             setProfileImage(photoRes.photoUrl);
@@ -403,7 +880,6 @@ Thank you for your feedback!
             onPress={() => {
               setIsConnected(true);
               setLoading(true);
-              // Retry logic here
             }}
           >
             <Text style={styles.retryText}>Retry</Text>
@@ -541,6 +1017,66 @@ Thank you for your feedback!
             </View>
           </View>
 
+          {/* Reports Section */}
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: isDark ? "#FFFFFF" : "#000000" }]}>
+              Reports
+            </Text>
+            <View style={[styles.card, { backgroundColor: isDark ? "#1C1C1E" : "#FFFFFF" }]}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.actionRow,
+                  pressed && { backgroundColor: isDark ? "#2C2C2E" : "#F2F2F7" }
+                ]}
+                onPress={() => {
+                  setReportType('monthly');
+                  setShowReportModal(true);
+                }}
+              >
+                <View style={styles.actionLeft}>
+                  <View style={[styles.actionIcon, { backgroundColor: '#007AFF20' }]}>
+                    <Ionicons name="calendar-outline" size={20} color="#007AFF" />
+                  </View>
+                  <View>
+                    <Text style={[styles.actionLabel, { color: isDark ? "#FFFFFF" : "#000000" }]}>
+                      Monthly Report
+                    </Text>
+                    <Text style={styles.preferenceDescription}>
+                      Select month to generate report
+                    </Text>
+                  </View>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color="#8E8E93" />
+              </Pressable>
+
+              <Pressable
+                style={({ pressed }) => [
+                  styles.actionRow,
+                  pressed && { backgroundColor: isDark ? "#2C2C2E" : "#F2F2F7" }
+                ]}
+                onPress={() => {
+                  setReportType('overall');
+                  setShowReportModal(true);
+                }}
+              >
+                <View style={styles.actionLeft}>
+                  <View style={[styles.actionIcon, { backgroundColor: '#34C75920' }]}>
+                    <Ionicons name="stats-chart-outline" size={20} color="#34C759" />
+                  </View>
+                  <View>
+                    <Text style={[styles.actionLabel, { color: isDark ? "#FFFFFF" : "#000000" }]}>
+                      Overall Report
+                    </Text>
+                    <Text style={styles.preferenceDescription}>
+                      Complete attendance history
+                    </Text>
+                  </View>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color="#8E8E93" />
+              </Pressable>
+            </View>
+          </View>
+
           {/* Preferences */}
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: isDark ? "#FFFFFF" : "#000000" }]}>
@@ -644,6 +1180,132 @@ Thank you for your feedback!
         </View>
       </ScrollView>
 
+      {/* Report Options Modal */}
+      <Modal
+        visible={showReportModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowReportModal(false)}
+      >
+        <BlurView intensity={90} tint={isDark ? "dark" : "light"} style={styles.modalContainer}>
+          <View style={[styles.reportModalContent, { backgroundColor: isDark ? "#1C1C1E" : "#FFFFFF" }]}>
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: isDark ? "#FFFFFF" : "#000000" }]}>
+                {reportType === 'monthly' ? 'Monthly Report' : 'Overall Report'}
+              </Text>
+              <Pressable onPress={() => setShowReportModal(false)}>
+                <Ionicons name="close" size={24} color="#8E8E93" />
+              </Pressable>
+            </View>
+            
+            <View style={styles.reportModalBody}>
+              <View style={styles.reportInfoSection}>
+                <Ionicons 
+                  name={reportType === 'monthly' ? "calendar-outline" : "stats-chart-outline"} 
+                  size={48} 
+                  color={reportType === 'monthly' ? "#007AFF" : "#34C759"} 
+                />
+                <Text style={[styles.reportInfoTitle, { color: isDark ? "#FFFFFF" : "#000000" }]}>
+                  {reportType === 'monthly' 
+                    ? `${getMonthName(selectedMonth)} ${selectedYear}`
+                    : 'Complete History'}
+                </Text>
+                <Text style={styles.reportInfoDescription}>
+                  {reportType === 'monthly' 
+                    ? `Download attendance report for ${getMonthName(selectedMonth)} ${selectedYear}`
+                    : `Download complete attendance history (${attendanceData.length} days)`}
+                </Text>
+                
+                <View style={styles.reportFeatures}>
+                  <View style={styles.reportFeature}>
+                    <Ionicons name="checkmark-circle" size={20} color="#34C759" />
+                    <Text style={[styles.reportFeatureText, { color: isDark ? "#FFFFFF" : "#000000" }]}>
+                      Daily check-in/out times
+                    </Text>
+                  </View>
+                  <View style={styles.reportFeature}>
+                    <Ionicons name="checkmark-circle" size={20} color="#34C759" />
+                    <Text style={[styles.reportFeatureText, { color: isDark ? "#FFFFFF" : "#000000" }]}>
+                      Total hours worked
+                    </Text>
+                  </View>
+                  <View style={styles.reportFeature}>
+                    <Ionicons name="checkmark-circle" size={20} color="#34C759" />
+                    <Text style={[styles.reportFeatureText, { color: isDark ? "#FFFFFF" : "#000000" }]}>
+                      Leave records
+                    </Text>
+                  </View>
+                  <View style={styles.reportFeature}>
+                    <Ionicons name="checkmark-circle" size={20} color="#34C759" />
+                    <Text style={[styles.reportFeatureText, { color: isDark ? "#FFFFFF" : "#000000" }]}>
+                      Complete statistics
+                    </Text>
+                  </View>
+                </View>
+
+                {reportType === 'monthly' && (
+                  <View style={styles.monthSelector}>
+                    <Pressable 
+                      style={styles.monthNavButton}
+                      onPress={() => changeMonth('prev')}
+                    >
+                      <Ionicons name="chevron-back" size={24} color="#007AFF" />
+                    </Pressable>
+                    
+                    <Text style={[styles.monthText, { color: isDark ? "#FFFFFF" : "#000000" }]}>
+                      {getMonthName(selectedMonth)} {selectedYear}
+                    </Text>
+                    
+                    <Pressable 
+                      style={styles.monthNavButton}
+                      onPress={() => changeMonth('next')}
+                    >
+                      <Ionicons name="chevron-forward" size={24} color="#007AFF" />
+                    </Pressable>
+                  </View>
+                )}
+              </View>
+
+              <View style={styles.reportActions}>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.reportButton,
+                    styles.reportButtonPrimary,
+                    pressed && styles.reportButtonPressed
+                  ]}
+                  onPress={generatePDFReport}
+                  disabled={downloading}
+                >
+                  {downloading ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <>
+                      <Ionicons name="download-outline" size={20} color="#FFFFFF" />
+                      <Text style={styles.reportButtonText}>
+                        {reportType === 'monthly' ? 'Download Monthly Report' : 'Download Overall Report'}
+                      </Text>
+                    </>
+                  )}
+                </Pressable>
+                
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.reportButton,
+                    styles.reportButtonSecondary,
+                    pressed && { opacity: 0.7 }
+                  ]}
+                  onPress={() => setShowReportModal(false)}
+                >
+                  <Text style={[styles.reportButtonText, { color: isDark ? "#FFFFFF" : "#000000" }]}>
+                    Cancel
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </BlurView>
+      </Modal>
+
       {/* Photo Upload Options Modal */}
       <Modal
         visible={showPhotoOptions}
@@ -703,7 +1365,6 @@ Thank you for your feedback!
                 </View>
               </Pressable>
               
-              {/* Remove Photo Option */}
               {profileImage && !profileImage.includes('ui-avatars.com') && (
                 <Pressable 
                   style={({ pressed }) => [
@@ -753,6 +1414,18 @@ Thank you for your feedback!
             <ActivityIndicator size="large" color="#007AFF" />
             <Text style={[styles.uploadingText, { color: isDark ? "#FFFFFF" : "#000000" }]}>
               Uploading Photo...
+            </Text>
+          </BlurView>
+        </View>
+      )}
+
+      {/* Downloading Overlay */}
+      {downloading && (
+        <View style={styles.uploadingOverlay}>
+          <BlurView intensity={80} tint={isDark ? "dark" : "light"} style={styles.uploadingBlur}>
+            <ActivityIndicator size="large" color="#007AFF" />
+            <Text style={[styles.uploadingText, { color: isDark ? "#FFFFFF" : "#000000" }]}>
+              Generating PDF...
             </Text>
           </BlurView>
         </View>
@@ -1256,6 +1929,96 @@ const styles = StyleSheet.create({
   modalText: {
     fontSize: 16,
     lineHeight: 24,
+  },
+  // Report Modal Styles
+  reportModalContent: {
+    width: '90%',
+    maxWidth: 400,
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  reportModalBody: {
+    padding: 20,
+  },
+  reportInfoSection: {
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  reportInfoTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    marginTop: 12,
+    marginBottom: 8,
+  },
+  reportInfoDescription: {
+    fontSize: 14,
+    color: '#8E8E93',
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  reportFeatures: {
+    width: '100%',
+    gap: 12,
+    marginTop: 8,
+  },
+  reportFeature: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  reportFeatureText: {
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  monthSelector: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 20,
+    marginBottom: 10,
+    backgroundColor: 'rgba(142, 142, 147, 0.1)',
+    borderRadius: 12,
+    padding: 8,
+    width: '100%',
+  },
+  monthNavButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  monthText: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  reportActions: {
+    gap: 12,
+    marginTop: 10,
+  },
+  reportButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 12,
+    gap: 8,
+  },
+  reportButtonPrimary: {
+    backgroundColor: '#007AFF',
+  },
+  reportButtonSecondary: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: '#8E8E93',
+  },
+  reportButtonPressed: {
+    opacity: 0.7,
+  },
+  reportButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
   // Photo Upload Styles
   photoOptionsContent: {
