@@ -1,12 +1,26 @@
 // 📡 api.js — Handles all API calls between Expo app and Node.js backend
 
-// 🚀 SERVER CONFIGURATION
-// const SERVER_URL = "http://192.168.29.155:5000"; // Local testing
-const SERVER_URL = "https://attendancesystemmobile.vercel.app";
+// ─────────────────────────────────────────────────────────────
+// 🔧 DEV MODE TOGGLE
+//    true  → uses your local machine IP (for testing)
+//    false → uses live Vercel server (for production)
+// ─────────────────────────────────────────────────────────────
+const DEV_MODE = false; // ← ONLY change this line
+
+// ⚠️ Replace with YOUR computer's local IP
+// On Windows: open CMD → type "ipconfig" → look for IPv4 Address
+// Must be on same WiFi as your phone
+const LOCAL_URL      = "http://192.168.29.155:5000";
+const PRODUCTION_URL = "https://attendancesystemmobile.vercel.app";
+
+const SERVER_URL = DEV_MODE ? LOCAL_URL : PRODUCTION_URL;
 
 const BASE_URL = SERVER_URL.endsWith('/')
     ? SERVER_URL.slice(0, -1)
     : SERVER_URL;
+
+console.log(`🌐 API: ${DEV_MODE ? '🔧 LOCAL' : '🚀 PRODUCTION'} → ${BASE_URL}`);
+
 
 /* -------------------- Helper: Parse JSON Safely -------------------- */
 async function handleResponse(res) {
@@ -83,7 +97,6 @@ export async function getHistory(empId) {
         const res = await fetch(`${BASE_URL}/mobile/history/${empId}`);
         const data = await handleResponse(res);
         
-        // Ensure we always return a consistent format
         return {
             attendance: data.attendance || [],
             leaves: data.leaves || []
@@ -91,6 +104,22 @@ export async function getHistory(empId) {
     } catch (err) {
         console.error("⚠️ History fetch error:", err);
         return { attendance: [], leaves: [] };
+    }
+}
+
+/* -------------------- 🔑 Admin: Get Today's Attendance -------------------- */
+// ✅ NEW — called by AdminScreen after admin login
+// Endpoint: GET /mobile/admin/attendance?admin_id=<id>
+export async function getAdminAttendance(adminId) {
+    try {
+        const res = await fetch(`${BASE_URL}/mobile/admin/attendance?admin_id=${adminId}`, {
+            method: "GET",
+            headers: { "Content-Type": "application/json" },
+        });
+        return await handleResponse(res);
+    } catch (err) {
+        console.error("⚠️ Admin attendance fetch error:", err);
+        return { success: false, msg: "Network connection failed" };
     }
 }
 
@@ -148,10 +177,7 @@ export async function getEmployeeAttendance(userId) {
     try {
         console.log("📊 Fetching attendance for user:", userId);
         
-        // Directly use history endpoint - this is guaranteed to work
         const historyData = await getHistory(userId);
-        
-        // Transform the data if needed (your API might return different format)
         const attendance = Array.isArray(historyData.attendance) ? historyData.attendance : [];
         
         console.log(`✅ Found ${attendance.length} attendance records`);
@@ -163,7 +189,6 @@ export async function getEmployeeAttendance(userId) {
         
     } catch (err) {
         console.error("⚠️ Attendance fetch error:", err);
-        // Return empty array on error
         return { 
             success: true, 
             attendance: [],
@@ -177,11 +202,9 @@ export async function getMonthlyAttendance(userId, month, year) {
     try {
         console.log(`📊 Fetching monthly attendance for user ${userId}: ${month}/${year}`);
         
-        // First get all attendance
         const data = await getEmployeeAttendance(userId);
         
         if (data.success && data.attendance) {
-            // Filter for specific month and year
             const monthlyData = data.attendance.filter(record => {
                 if (!record.date) return false;
                 const recordDate = new Date(record.date);
@@ -237,7 +260,6 @@ export const updateProfilePicture = async (userId, imageUri) => {
         const match = /\.(\w+)$/.exec(filename);
         const type = match ? `image/${match[1]}` : 'image/jpeg';
 
-        // Handle iOS file:// protocol
         const uri = Platform.OS === 'ios' ? imageUri.replace('file://', '') : imageUri;
 
         formData.append('photo', {
@@ -273,7 +295,6 @@ export const getUserPhoto = async (userId) => {
         const data = await handleResponse(res);
 
         if (data.success && data.photoUrl) {
-            // Ensure absolute URL
             if (data.photoUrl.startsWith('/')) {
                 data.photoUrl = `${BASE_URL}${data.photoUrl}`;
             }
