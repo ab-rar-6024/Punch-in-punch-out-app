@@ -4,36 +4,55 @@ import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Dimensions,
   FlatList,
   Modal,
-  Pressable,
+  Platform,
   RefreshControl,
+  SafeAreaView,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
+import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 
 import { getAdminAttendance, getHistory } from '../api';
+import { useTheme } from './ThemeContext';
+
+const SCREEN_HEIGHT = Dimensions.get('window').height;
+
+function fmtDate(val) {
+  if (!val) return '—';
+  try {
+    return new Date(val).toLocaleDateString('en-IN', {
+      day: 'numeric', month: 'short', year: 'numeric',
+    });
+  } catch { return String(val); }
+}
 
 export default function AdminScreen({ navigation, route }) {
+  const { theme, isDark, toggleTheme } = useTheme();
+  const c = theme.colors; // shorthand
 
   const fromLogin = !!route?.params?.user;
   const adminUser = route?.params?.user || null;
 
   const [adminVerified, setAdminVerified] = useState(fromLogin);
-  const [records, setRecords]             = useState([]);
-  const [loading, setLoading]             = useState(false);
-  const [refreshing, setRefreshing]       = useState(false);
-  const [errorMsg, setErrorMsg]           = useState('');
+  const [records,       setRecords]       = useState([]);
+  const [loading,       setLoading]       = useState(false);
+  const [refreshing,    setRefreshing]    = useState(false);
+  const [errorMsg,      setErrorMsg]      = useState('');
 
-  // ── Detail modal state ──
-  const [modalVisible, setModalVisible]   = useState(false);
-  const [selectedUser, setSelectedUser]   = useState(null);
-  const [userHistory, setUserHistory]     = useState({ attendance: [], leaves: [] });
+  // Modal state
+  const [modalVisible,   setModalVisible]   = useState(false);
+  const [selectedUser,   setSelectedUser]   = useState(null);
+  const [attendance,     setAttendance]     = useState([]);
+  const [leaves,         setLeaves]         = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyTab, setHistoryTab]       = useState('attendance'); // 'attendance' | 'leaves'
+  const [activeTab,      setActiveTab]      = useState('attendance');
 
   useEffect(() => {
     if (adminVerified && adminUser?.id) fetchAttendance();
@@ -41,13 +60,13 @@ export default function AdminScreen({ navigation, route }) {
 
   /* ── Logout ── */
   const handleLogout = () => {
-    Alert.alert('Logout', 'Are you sure you want to logout?', [
+    Alert.alert('Sign Out', 'Are you sure?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Logout', style: 'destructive', onPress: () => navigation.replace('Login') },
+      { text: 'Sign Out', style: 'destructive', onPress: () => navigation.replace('Login') },
     ]);
   };
 
-  /* ── Fetch today's attendance list ── */
+  /* ── Today's attendance ── */
   const fetchAttendance = async () => {
     setLoading(true);
     setErrorMsg('');
@@ -58,15 +77,10 @@ export default function AdminScreen({ navigation, route }) {
         setRecords(Array.isArray(list) ? list : []);
         if (list.length === 0) setErrorMsg('No attendance records for today.');
       } else {
-        setErrorMsg(result.msg || 'Failed to load attendance.');
-        Alert.alert('Error', result.msg || 'Failed to load attendance.', [
-          { text: 'Retry', onPress: fetchAttendance }, { text: 'OK' },
-        ]);
+        setErrorMsg(result.msg || 'Failed to load.');
       }
     } catch (err) {
-      const msg = err?.message || 'Network error';
-      setErrorMsg(msg);
-      Alert.alert('Error', msg);
+      setErrorMsg(err?.message || 'Network error');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -75,21 +89,30 @@ export default function AdminScreen({ navigation, route }) {
 
   const onRefresh = () => { setRefreshing(true); fetchAttendance(); };
 
-  /* ── Open employee detail modal ── */
-  const openUserDetail = async (item) => {
+  /* ── Open detail modal ── */
+  const openDetail = async (item) => {
     setSelectedUser(item);
-    setModalVisible(true);
-    setHistoryTab('attendance');
+    setActiveTab('attendance');
+    setAttendance([]);
+    setLeaves([]);
     setHistoryLoading(true);
-    setUserHistory({ attendance: [], leaves: [] });
+    setModalVisible(true);
+
     try {
       const hist = await getHistory(item.id);
-      setUserHistory({
-        attendance: hist.attendance || [],
-        leaves:     hist.leaves     || [],
-      });
+      console.log('History:', JSON.stringify(hist).slice(0, 200));
+
+      const att = Array.isArray(hist?.attendance) ? hist.attendance : [];
+      const lv  = Array.isArray(hist?.leaves)     ? hist.leaves     : [];
+
+      // Sort newest first
+      att.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+      lv.sort((a, b)  => new Date(b.from_date || 0) - new Date(a.from_date || 0));
+
+      setAttendance(att);
+      setLeaves(lv);
     } catch (err) {
-      Alert.alert('Error', 'Could not load employee history.');
+      Alert.alert('Error', 'Could not load history: ' + err.message);
     } finally {
       setHistoryLoading(false);
     }
@@ -98,507 +121,498 @@ export default function AdminScreen({ navigation, route }) {
   const closeModal = () => {
     setModalVisible(false);
     setSelectedUser(null);
-    setUserHistory({ attendance: [], leaves: [] });
+    setAttendance([]);
+    setLeaves([]);
   };
 
-  /* ── Helpers ── */
-  const fmtDate = (val) => {
-    if (!val) return '—';
-    try {
-      return new Date(val).toLocaleDateString('en-IN', {
-        day: 'numeric', month: 'short', year: 'numeric',
-      });
-    } catch { return val; }
-  };
+  const presentDays = attendance.filter(r => !r.absent && r.time_in).length;
+  const absentDays  = attendance.filter(r => r.absent).length;
 
-  const presentDays = userHistory.attendance.filter(r => !r.absent && r.time_in).length;
-  const absentDays  = userHistory.attendance.filter(r => r.absent).length;
-  const totalDays   = userHistory.attendance.length;
-
-  /* ─────────────────────────────────────────
-     NOT VERIFIED SCREEN
-  ───────────────────────────────────────── */
+  /* ── NOT VERIFIED ── */
   if (!adminVerified) {
     return (
-      <View style={styles.center}>
-        <View style={styles.pinCard}>
-          <View style={styles.iconWrap}>
-            <MaterialCommunityIcons name="shield-lock-outline" size={36} color="#2563EB" />
-          </View>
-          <Text style={styles.pinHeading}>Admin Panel</Text>
-          <Text style={styles.pinSub}>Login from the main screen to access admin</Text>
-          <TouchableOpacity style={styles.btn} onPress={() => navigation.replace('Login')}>
-            <Text style={styles.btnText}>Go to Login</Text>
+      <SafeAreaView style={[s.flex, { backgroundColor: c.background }]}>
+        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
+        <View style={s.center}>
+          <MaterialCommunityIcons name="shield-lock-outline" size={48} color={c.primary} />
+          <Text style={[s.pinTitle, { color: c.text }]}>Admin Access</Text>
+          <Text style={[s.pinSub, { color: c.textSecondary }]}>Sign in to access admin panel</Text>
+          <TouchableOpacity style={[s.btn, { backgroundColor: c.primary }]}
+            onPress={() => navigation.replace('Login')}>
+            <Text style={s.btnTxt}>Go to Login</Text>
           </TouchableOpacity>
         </View>
-      </View>
+      </SafeAreaView>
     );
   }
 
-  /* ─────────────────────────────────────────
-     MAIN ATTENDANCE SCREEN
-  ───────────────────────────────────────── */
+  /* ── MAIN SCREEN ── */
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={[s.flex, { backgroundColor: c.background }]}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
 
-      {/* Header */}
-      <View style={styles.header}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.heading}>Today's Attendance</Text>
-          <Text style={styles.subheading}>
-            {new Date().toLocaleDateString('en-IN', {
-              weekday: 'long', day: 'numeric', month: 'short', year: 'numeric',
-            })}
+      {/* ── Header ── */}
+      <View style={[s.header, { borderBottomColor: c.border }]}>
+        <View style={s.headerLeft}>
+          <Text style={[s.heading, { color: c.text }]}>Attendance</Text>
+          <Text style={[s.subDate, { color: c.textSecondary }]}>
+            {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short' })}
           </Text>
-          {adminUser?.name && <Text style={styles.adminName}>👤 {adminUser.name}</Text>}
+          {adminUser?.name && <Text style={[s.adminLabel, { color: c.primary }]}>{adminUser.name}</Text>}
         </View>
-        <View style={styles.headerRight}>
-          <View style={styles.countBadge}>
-            <Text style={styles.countText}>{records.length} staff</Text>
-          </View>
-          <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
-            <MaterialCommunityIcons name="logout" size={18} color="#EF4444" />
+        <View style={s.headerRight}>
+          <TouchableOpacity style={[s.iconBtn, { backgroundColor: c.card }]} onPress={toggleTheme}>
+            <MaterialCommunityIcons name={isDark ? 'weather-sunny' : 'weather-night'} size={20} color={c.textSecondary} />
+          </TouchableOpacity>
+          <TouchableOpacity style={[s.iconBtn, { backgroundColor: c.card }]} onPress={handleLogout}>
+            <MaterialCommunityIcons name="logout" size={20} color={c.danger} />
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* Error bar */}
+      {/* ── Stats bar ── */}
+      <View style={[s.statsBar, { borderBottomColor: c.border }]}>
+        {[
+          { val: records.length,                        lbl: 'Total Staff', col: c.text    },
+          { val: records.filter(r => r.time_in).length, lbl: 'Present',     col: c.success },
+          { val: records.filter(r => r.absent).length,  lbl: 'Absent',      col: c.danger  },
+        ].map(({ val, lbl, col }, i, arr) => (
+          <View key={lbl} style={{ flexDirection: 'row', flex: 1, alignItems: 'center' }}>
+            <View style={s.statItem}>
+              <Text style={[s.statVal, { color: col }]}>{val}</Text>
+              <Text style={[s.statLbl, { color: c.textSecondary }]}>{lbl}</Text>
+            </View>
+            {i < arr.length - 1 && <View style={[s.statDiv, { backgroundColor: c.border }]} />}
+          </View>
+        ))}
+      </View>
+
+      {/* ── Error ── */}
       {errorMsg ? (
-        <View style={styles.errorBar}>
-          <MaterialCommunityIcons name="alert-circle-outline" size={15} color="#F59E0B" />
-          <Text style={styles.errorBarText} numberOfLines={2}>{errorMsg}</Text>
+        <View style={[s.errorBar, { backgroundColor: c.warning + '18' }]}>
+          <MaterialCommunityIcons name="alert-circle" size={18} color={c.warning} />
+          <Text style={[s.errorTxt, { color: c.warning }]} numberOfLines={2}>{errorMsg}</Text>
           <TouchableOpacity onPress={fetchAttendance}>
-            <Text style={styles.retryText}>Retry</Text>
+            <Text style={[s.retryTxt, { color: c.primary }]}>Retry</Text>
           </TouchableOpacity>
         </View>
       ) : null}
 
-      {/* Loading */}
+      {/* ── Loading ── */}
       {loading && !refreshing && (
-        <View style={styles.loadingWrap}>
-          <ActivityIndicator size="large" color="#2563EB" />
-          <Text style={styles.loadingText}>Loading attendance...</Text>
+        <View style={s.loadingWrap}>
+          <ActivityIndicator size="large" color={c.primary} />
         </View>
       )}
 
-      {/* Attendance List */}
+      {/* ── List ── */}
       <FlatList
         data={records}
-        keyExtractor={(item, index) => String(item.id || index)}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh}
-            colors={['#2563EB']} tintColor="#2563EB" />
-        }
-        contentContainerStyle={styles.listContent}
+        keyExtractor={(item, idx) => String(item.id || idx)}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={c.primary} colors={[c.primary]} />}
+        contentContainerStyle={s.listPad}
+        showsVerticalScrollIndicator={false}
         ListEmptyComponent={
           !loading && (
-            <View style={styles.emptyWrap}>
-              <MaterialCommunityIcons name="account-group-outline" size={48} color="#94A3B8" />
-              <Text style={styles.emptyText}>No attendance records for today</Text>
-              <TouchableOpacity style={styles.retryBigBtn} onPress={fetchAttendance}>
-                <Text style={styles.retryBigText}>Tap to Retry</Text>
+            <Animated.View entering={FadeInUp} style={s.emptyWrap}>
+              <MaterialCommunityIcons name="account-group-outline" size={60} color={c.textTertiary} />
+              <Text style={[s.emptyTxt, { color: c.textSecondary }]}>No records for today</Text>
+              <TouchableOpacity style={[s.emptyBtn, { backgroundColor: c.card }]} onPress={fetchAttendance}>
+                <Text style={[s.emptyBtnTxt, { color: c.primary }]}>Refresh</Text>
               </TouchableOpacity>
-            </View>
+            </Animated.View>
           )
         }
-        renderItem={({ item }) => (
-          // ✅ Tap card → open detail modal
-          <TouchableOpacity style={styles.card} onPress={() => openUserDetail(item)} activeOpacity={0.75}>
+        renderItem={({ item, index }) => {
+          const isAbsent  = item.absent === true || item.absent === 'Yes' || item.absent === 1;
+          const isPresent = !isAbsent && item.time_in;
+          const badgeBg   = isAbsent ? c.danger + '20' : isPresent ? c.success + '20' : c.textTertiary + '20';
+          const badgeTxt  = isAbsent ? c.danger         : isPresent ? c.success         : c.textSecondary;
+          const badgeLabel= isAbsent ? 'Absent'         : isPresent ? 'Present'         : 'Not In';
 
-            {/* Name + Status */}
-            <View style={styles.cardTop}>
-              <View style={styles.avatar}>
-                <Text style={styles.avatarText}>
-                  {(item.name || '?').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
-                </Text>
-              </View>
-              <View style={styles.cardInfo}>
-                <Text style={styles.name}>{item.name || 'Unknown'}</Text>
-                <Text style={styles.empCode}>{item.emp_code || '—'}</Text>
-              </View>
-              {(item.absent === true || item.absent === 'Yes' || item.absent === 1) ? (
-                <View style={styles.badgeAbsent}><Text style={styles.badgeAbsentText}>Absent</Text></View>
-              ) : item.time_in ? (
-                <View style={styles.badgePresent}><Text style={styles.badgePresentText}>Present</Text></View>
-              ) : (
-                <View style={styles.badgePending}><Text style={styles.badgePendingText}>Not In</Text></View>
-              )}
-            </View>
+          return (
+            <Animated.View entering={FadeInDown.delay(index * 40)}>
+              <TouchableOpacity style={[s.card, { backgroundColor: c.card }]}
+                onPress={() => openDetail(item)} activeOpacity={0.75}>
 
-            {/* Time In / Out */}
-            <View style={styles.timeRow}>
-              <View style={styles.timeBox}>
-                <MaterialCommunityIcons name="login-variant" size={14} color="#059669" />
-                <Text style={styles.timeLabel}>In</Text>
-                <Text style={styles.timeValue}>{item.time_in || '—'}</Text>
-              </View>
-              <View style={styles.timeSep} />
-              <View style={styles.timeBox}>
-                <MaterialCommunityIcons name="logout-variant" size={14} color="#DC2626" />
-                <Text style={styles.timeLabel}>Out</Text>
-                <Text style={styles.timeValue}>{item.time_out || '—'}</Text>
-              </View>
-            </View>
+                {/* Name row */}
+                <View style={s.cardTop}>
+                  <View style={[s.avatar, { backgroundColor: c.primary }]}>
+                    <Text style={s.avatarTxt}>
+                      {(item.name || '?').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
+                    </Text>
+                  </View>
+                  <View style={s.nameCol}>
+                    <Text style={[s.nameText, { color: c.text }]}>{item.name || 'Unknown'}</Text>
+                    <Text style={[s.codeText, { color: c.textSecondary }]}>{item.emp_code || '—'}</Text>
+                  </View>
+                  <View style={[s.badge, { backgroundColor: badgeBg }]}>
+                    <Text style={[s.badgeTxt, { color: badgeTxt }]}>{badgeLabel}</Text>
+                  </View>
+                </View>
 
-            {/* Location */}
-            {item.location_in && item.location_in !== '—' && (
-              <View style={styles.locationRow}>
-                <MaterialCommunityIcons name="map-marker-outline" size={13} color="#60A5FA" />
-                <Text style={styles.locationText} numberOfLines={1}>
-                  {item.location_in.split('|')[0] || item.location_in}
-                </Text>
-              </View>
-            )}
+                {/* Times */}
+                <View style={s.timeRow}>
+                  <View style={[s.timeBox, { backgroundColor: c.background }]}>
+                    <MaterialCommunityIcons name="login" size={15} color={c.success} />
+                    <Text style={[s.timeLbl, { color: c.textSecondary }]}>In</Text>
+                    <Text style={[s.timeVal, { color: c.text }]}>{item.time_in || '—'}</Text>
+                  </View>
+                  <View style={[s.timeDiv, { backgroundColor: c.border }]} />
+                  <View style={[s.timeBox, { backgroundColor: c.background }]}>
+                    <MaterialCommunityIcons name="logout" size={15} color={c.danger} />
+                    <Text style={[s.timeLbl, { color: c.textSecondary }]}>Out</Text>
+                    <Text style={[s.timeVal, { color: c.text }]}>{item.time_out || '—'}</Text>
+                  </View>
+                </View>
 
-            {/* Absent reason */}
-            {(item.absent === true || item.absent === 'Yes' || item.absent === 1) && item.reason ? (
-              <View style={styles.reasonRow}>
-                <MaterialCommunityIcons name="information-outline" size={13} color="#F59E0B" />
-                <Text style={styles.reasonText}>{item.reason}</Text>
-              </View>
-            ) : null}
+                {/* Location */}
+                {item.location_in && item.location_in !== '—' && (
+                  <View style={s.locRow}>
+                    <MaterialCommunityIcons name="map-marker" size={13} color={c.primary} />
+                    <Text style={[s.locTxt, { color: c.textSecondary }]} numberOfLines={1}>
+                      {item.location_in.split('|')[0] || item.location_in}
+                    </Text>
+                  </View>
+                )}
 
-            {/* Tap hint */}
-            <View style={styles.tapHint}>
-              <Text style={styles.tapHintText}>Tap to view full history</Text>
-              <MaterialCommunityIcons name="chevron-right" size={14} color="#3d4f6e" />
-            </View>
-
-          </TouchableOpacity>
-        )}
+                <View style={s.tapRow}>
+                  <Text style={[s.tapTxt, { color: c.textTertiary }]}>Tap to view full history</Text>
+                  <MaterialCommunityIcons name="chevron-right" size={13} color={c.textTertiary} />
+                </View>
+              </TouchableOpacity>
+            </Animated.View>
+          );
+        }}
       />
 
-      {/* ═══════════════════════════════════════
-          EMPLOYEE DETAIL MODAL
-      ═══════════════════════════════════════ */}
+      {/* ══════════════════════════════════
+          MODAL — clean bottom sheet
+      ══════════════════════════════════ */}
       <Modal
         visible={modalVisible}
         animationType="slide"
-        transparent
+        transparent={false}
+        presentationStyle="pageSheet"
         onRequestClose={closeModal}
       >
-        <View style={styles.modalOverlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={closeModal} />
+        <SafeAreaView style={[s.modalRoot, { backgroundColor: c.background }]}>
 
-          <View style={styles.modalSheet}>
-
-            {/* Modal handle */}
-            <View style={styles.modalHandle} />
-
-            {/* Modal Header */}
-            {selectedUser && (
-              <View style={styles.modalHeader}>
-                <View style={styles.modalAvatar}>
-                  <Text style={styles.modalAvatarText}>
-                    {(selectedUser.name || '?').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
-                  </Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.modalName}>{selectedUser.name}</Text>
-                  <Text style={styles.modalEmpCode}>{selectedUser.emp_code || '—'}</Text>
-                  {selectedUser.pin && (
-                    <Text style={styles.modalPin}>PIN: {selectedUser.pin}</Text>
-                  )}
-                </View>
-                <TouchableOpacity style={styles.closeBtn} onPress={closeModal}>
-                  <MaterialCommunityIcons name="close" size={20} color="#94A3B8" />
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* Stats row */}
-            <View style={styles.statsRow}>
-              <View style={styles.statBox}>
-                <Text style={styles.statNum}>{totalDays}</Text>
-                <Text style={styles.statLbl}>Total</Text>
-              </View>
-              <View style={[styles.statBox, { borderColor: 'rgba(5,150,105,0.2)' }]}>
-                <Text style={[styles.statNum, { color: '#10B981' }]}>{presentDays}</Text>
-                <Text style={styles.statLbl}>Present</Text>
-              </View>
-              <View style={[styles.statBox, { borderColor: 'rgba(239,68,68,0.2)' }]}>
-                <Text style={[styles.statNum, { color: '#EF4444' }]}>{absentDays}</Text>
-                <Text style={styles.statLbl}>Absent</Text>
-              </View>
-              <View style={[styles.statBox, { borderColor: 'rgba(201,168,76,0.2)' }]}>
-                <Text style={[styles.statNum, { color: '#F59E0B' }]}>{userHistory.leaves.length}</Text>
-                <Text style={styles.statLbl}>Leaves</Text>
-              </View>
-            </View>
-
-            {/* Tabs */}
-            <View style={styles.tabRow}>
-              <TouchableOpacity
-                style={[styles.tab, historyTab === 'attendance' && styles.tabActive]}
-                onPress={() => setHistoryTab('attendance')}
-              >
-                <MaterialCommunityIcons name="calendar-clock" size={14}
-                  color={historyTab === 'attendance' ? '#2563EB' : '#64748B'} />
-                <Text style={[styles.tabText, historyTab === 'attendance' && styles.tabTextActive]}>
-                  Attendance
+          {/* Modal Header */}
+          {selectedUser && (
+            <View style={[s.mHeader, { borderBottomColor: c.border }]}>
+              <View style={[s.mAvatar, { backgroundColor: c.primary }]}>
+                <Text style={s.mAvatarTxt}>
+                  {(selectedUser.name || '?').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
                 </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.tab, historyTab === 'leaves' && styles.tabActive]}
-                onPress={() => setHistoryTab('leaves')}
-              >
-                <MaterialCommunityIcons name="umbrella-beach-outline" size={14}
-                  color={historyTab === 'leaves' ? '#2563EB' : '#64748B'} />
-                <Text style={[styles.tabText, historyTab === 'leaves' && styles.tabTextActive]}>
-                  Leave Requests
+              </View>
+              <View style={s.mNameCol}>
+                <Text style={[s.mName, { color: c.text }]}>{selectedUser.name}</Text>
+                <Text style={[s.mCode, { color: c.textSecondary }]}>
+                  {selectedUser.emp_code || '—'} • PIN: {selectedUser.pin || '—'}
                 </Text>
+              </View>
+              <TouchableOpacity style={[s.closeBtn, { backgroundColor: c.card }]} onPress={closeModal}>
+                <MaterialCommunityIcons name="close" size={20} color={c.textSecondary} />
               </TouchableOpacity>
             </View>
+          )}
 
-            {/* Tab Content */}
-            {historyLoading ? (
-              <View style={styles.modalLoading}>
-                <ActivityIndicator color="#2563EB" />
-                <Text style={styles.modalLoadingText}>Loading history...</Text>
+          {/* Stats row */}
+          <View style={s.mStatsRow}>
+            {[
+              { val: attendance.length, lbl: 'Total',   col: c.text    },
+              { val: presentDays,       lbl: 'Present', col: c.success },
+              { val: absentDays,        lbl: 'Absent',  col: c.danger  },
+              { val: leaves.length,     lbl: 'Leaves',  col: c.warning },
+            ].map(({ val, lbl, col }) => (
+              <View key={lbl} style={[s.mStatBox,
+                { backgroundColor: col === c.text ? c.card : col + '15' }]}>
+                <Text style={[s.mStatVal, { color: col }]}>{val}</Text>
+                <Text style={[s.mStatLbl,
+                  { color: col === c.text ? c.textSecondary : col }]}>{lbl}</Text>
               </View>
-            ) : (
-              <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
+            ))}
+          </View>
 
-                {/* ── ATTENDANCE TAB ── */}
-                {historyTab === 'attendance' && (
-                  userHistory.attendance.length === 0 ? (
-                    <View style={styles.emptyTab}>
-                      <MaterialCommunityIcons name="calendar-blank-outline" size={36} color="#64748B" />
-                      <Text style={styles.emptyTabText}>No attendance records found</Text>
-                    </View>
-                  ) : (
-                    userHistory.attendance.map((rec, idx) => (
-                      <View key={idx} style={styles.histCard}>
+          {/* Tabs */}
+          <View style={[s.tabBar, { backgroundColor: c.card }]}>
+            <TouchableOpacity
+              style={[s.tabBtn, activeTab === 'attendance' && { backgroundColor: c.background }]}
+              onPress={() => setActiveTab('attendance')}
+            >
+              <MaterialCommunityIcons name="calendar-month" size={17}
+                color={activeTab === 'attendance' ? c.primary : c.textSecondary} />
+              <Text style={[s.tabTxt,
+                { color: activeTab === 'attendance' ? c.primary : c.textSecondary }]}>
+                Attendance ({attendance.length})
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[s.tabBtn, activeTab === 'leaves' && { backgroundColor: c.background }]}
+              onPress={() => setActiveTab('leaves')}
+            >
+              <MaterialCommunityIcons name="calendar-remove" size={17}
+                color={activeTab === 'leaves' ? c.primary : c.textSecondary} />
+              <Text style={[s.tabTxt,
+                { color: activeTab === 'leaves' ? c.primary : c.textSecondary }]}>
+                Leaves ({leaves.length})
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* ── Tab Content ── */}
+          {historyLoading ? (
+            <View style={s.mLoadWrap}>
+              <ActivityIndicator size="large" color={c.primary} />
+              <Text style={[s.mLoadTxt, { color: c.textSecondary }]}>Loading history...</Text>
+            </View>
+          ) : (
+            <ScrollView
+              style={s.mScroll}
+              contentContainerStyle={s.mScrollContent}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
+              {/* ── ATTENDANCE TAB ── */}
+              {activeTab === 'attendance' && (
+                attendance.length === 0 ? (
+                  <View style={s.emptyTab}>
+                    <MaterialCommunityIcons name="calendar-blank" size={48} color={c.textTertiary} />
+                    <Text style={[s.emptyTabTxt, { color: c.textSecondary }]}>No attendance records</Text>
+                  </View>
+                ) : (
+                  attendance.map((rec, idx) => {
+                    const abs = rec.absent === true || rec.absent === 1 || rec.absent === 'true';
+                    return (
+                      <View key={idx} style={[s.histCard, { backgroundColor: c.card }]}>
                         {/* Date + status */}
-                        <View style={styles.histTop}>
-                          <View style={styles.histDateBox}>
-                            <MaterialCommunityIcons name="calendar" size={13} color="#94A3B8" />
-                            <Text style={styles.histDate}>{fmtDate(rec.date)}</Text>
+                        <View style={s.histTop}>
+                          <View style={s.histDateRow}>
+                            <MaterialCommunityIcons name="calendar" size={14} color={c.textSecondary} />
+                            <Text style={[s.histDate, { color: c.text }]}>{fmtDate(rec.date)}</Text>
                           </View>
-                          {rec.absent ? (
-                            <View style={styles.badgeAbsent}>
-                              <Text style={styles.badgeAbsentText}>Absent</Text>
+                          {abs ? (
+                            <View style={[s.hBadge, { backgroundColor: c.danger + '15' }]}>
+                              <Text style={[s.hBadgeTxt, { color: c.danger }]}>Absent</Text>
                             </View>
                           ) : rec.time_in ? (
-                            <View style={styles.badgePresent}>
-                              <Text style={styles.badgePresentText}>Present</Text>
+                            <View style={[s.hBadge, { backgroundColor: c.success + '15' }]}>
+                              <Text style={[s.hBadgeTxt, { color: c.success }]}>Present</Text>
                             </View>
                           ) : (
-                            <View style={styles.badgePending}>
-                              <Text style={styles.badgePendingText}>—</Text>
+                            <View style={[s.hBadge, { backgroundColor: c.textTertiary + '15' }]}>
+                              <Text style={[s.hBadgeTxt, { color: c.textSecondary }]}>No Record</Text>
                             </View>
                           )}
                         </View>
 
                         {/* Punch times */}
-                        <View style={styles.histTimeRow}>
-                          <View style={styles.histTimeBox}>
-                            <MaterialCommunityIcons name="login-variant" size={13} color="#059669" />
-                            <Text style={styles.histTimeLabel}>In</Text>
-                            <Text style={styles.histTimeValue}>{rec.time_in || '—'}</Text>
+                        <View style={[s.histTimes, { backgroundColor: c.background }]}>
+                          <View style={s.histTimeItem}>
+                            <MaterialCommunityIcons name="login" size={14} color={c.success} />
+                            <Text style={[s.histTimeLbl, { color: c.textSecondary }]}>In  </Text>
+                            <Text style={[s.histTimeVal, { color: c.text }]}>{rec.time_in || '—'}</Text>
                           </View>
-                          <View style={styles.timeSep} />
-                          <View style={styles.histTimeBox}>
-                            <MaterialCommunityIcons name="logout-variant" size={13} color="#DC2626" />
-                            <Text style={styles.histTimeLabel}>Out</Text>
-                            <Text style={styles.histTimeValue}>{rec.time_out || '—'}</Text>
+                          <View style={[s.histTimeDiv, { backgroundColor: c.border }]} />
+                          <View style={s.histTimeItem}>
+                            <MaterialCommunityIcons name="logout" size={14} color={c.danger} />
+                            <Text style={[s.histTimeLbl, { color: c.textSecondary }]}>Out </Text>
+                            <Text style={[s.histTimeVal, { color: c.text }]}>{rec.time_out || '—'}</Text>
                           </View>
                         </View>
 
                         {/* Location */}
                         {rec.location_in && rec.location_in !== '—' && (
-                          <View style={styles.histLocRow}>
-                            <MaterialCommunityIcons name="map-marker-outline" size={12} color="#60A5FA" />
-                            <Text style={styles.histLocText} numberOfLines={1}>
+                          <View style={s.histLocRow}>
+                            <MaterialCommunityIcons name="map-marker-outline" size={13} color={c.primary} />
+                            <Text style={[s.histLocTxt, { color: c.textSecondary }]} numberOfLines={1}>
                               {rec.location_in.split('|')[0] || rec.location_in}
                             </Text>
                           </View>
                         )}
 
                         {/* Absent reason */}
-                        {rec.absent && rec.reason ? (
-                          <View style={styles.histReasonRow}>
-                            <MaterialCommunityIcons name="information-outline" size={12} color="#F59E0B" />
-                            <Text style={styles.histReasonText}>{rec.reason}</Text>
+                        {abs && rec.reason ? (
+                          <View style={[s.reasonBox, { backgroundColor: c.warning + '10' }]}>
+                            <MaterialCommunityIcons name="information" size={13} color={c.warning} />
+                            <Text style={[s.reasonTxt, { color: c.warning }]}>{rec.reason}</Text>
                           </View>
                         ) : null}
                       </View>
-                    ))
-                  )
-                )}
+                    );
+                  })
+                )
+              )}
 
-                {/* ── LEAVES TAB ── */}
-                {historyTab === 'leaves' && (
-                  userHistory.leaves.length === 0 ? (
-                    <View style={styles.emptyTab}>
-                      <MaterialCommunityIcons name="umbrella-beach-outline" size={36} color="#64748B" />
-                      <Text style={styles.emptyTabText}>No leave requests found</Text>
-                    </View>
-                  ) : (
-                    userHistory.leaves.map((lv, idx) => (
-                      <View key={idx} style={styles.leaveCard}>
-                        <View style={styles.leaveTop}>
-                          <View style={styles.leaveIconWrap}>
-                            <MaterialCommunityIcons name="umbrella-beach-outline" size={18} color="#F59E0B" />
+              {/* ── LEAVES TAB ── */}
+              {activeTab === 'leaves' && (
+                leaves.length === 0 ? (
+                  <View style={s.emptyTab}>
+                    <MaterialCommunityIcons name="calendar-remove" size={48} color={c.textTertiary} />
+                    <Text style={[s.emptyTabTxt, { color: c.textSecondary }]}>No leave requests found</Text>
+                  </View>
+                ) : (
+                  leaves.map((lv, idx) => {
+                    const statusColor =
+                      lv.status === 'Approved' ? c.success :
+                      lv.status === 'Rejected' ? c.danger  : c.warning;
+                    return (
+                      <View key={idx} style={[s.leaveCard, { backgroundColor: c.card }]}>
+                        <View style={s.leaveTop}>
+                          <View style={[s.leaveIconBox, { backgroundColor: c.warning + '15' }]}>
+                            <MaterialCommunityIcons name="calendar-remove" size={20} color={c.warning} />
                           </View>
-                          <View style={{ flex: 1 }}>
-                            <Text style={styles.leaveType}>
+                          <View style={s.leaveInfo}>
+                            <Text style={[s.leaveType, { color: c.text }]}>
                               {lv.leave_type || lv.type || 'Leave'}
                             </Text>
-                            <Text style={styles.leaveReason} numberOfLines={2}>
-                              {lv.reason || '—'}
+                            <Text style={[s.leaveDates, { color: c.textSecondary }]}>
+                              {fmtDate(lv.from_date)} → {fmtDate(lv.to_date)}
                             </Text>
                           </View>
                           {lv.status && (
-                            <View style={[
-                              styles.leaveStatus,
-                              lv.status === 'Approved' && { borderColor: 'rgba(5,150,105,0.3)', backgroundColor: 'rgba(5,150,105,0.1)' },
-                              lv.status === 'Rejected' && { borderColor: 'rgba(239,68,68,0.3)',  backgroundColor: 'rgba(239,68,68,0.1)'  },
-                            ]}>
-                              <Text style={[
-                                styles.leaveStatusText,
-                                lv.status === 'Approved' && { color: '#10B981' },
-                                lv.status === 'Rejected' && { color: '#EF4444'  },
-                              ]}>{lv.status}</Text>
+                            <View style={[s.leaveStatus, { backgroundColor: statusColor + '15' }]}>
+                              <Text style={[s.leaveStatusTxt, { color: statusColor }]}>{lv.status}</Text>
                             </View>
                           )}
                         </View>
-                        <View style={styles.leaveDates}>
-                          <MaterialCommunityIcons name="calendar-range" size={13} color="#94A3B8" />
-                          <Text style={styles.leaveDateText}>
-                            {fmtDate(lv.from_date)} → {fmtDate(lv.to_date)}
-                          </Text>
-                        </View>
+                        {lv.reason ? (
+                          <Text style={[s.leaveReason, { color: c.textSecondary }]}>{lv.reason}</Text>
+                        ) : null}
                       </View>
-                    ))
-                  )
-                )}
+                    );
+                  })
+                )
+              )}
 
-                <View style={{ height: 30 }} />
-              </ScrollView>
-            )}
-          </View>
-        </View>
+              <View style={{ height: 40 }} />
+            </ScrollView>
+          )}
+        </SafeAreaView>
       </Modal>
 
-    </View>
+    </SafeAreaView>
   );
 }
 
 /* ─────────── Styles ─────────── */
-const styles = StyleSheet.create({
+const s = StyleSheet.create({
+  flex:   { flex: 1 },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24, gap: 14 },
 
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0F172A', padding: 24 },
-  pinCard: { width: '100%', maxWidth: 340, backgroundColor: '#1E293B', borderRadius: 20, padding: 28, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' },
-  iconWrap: { width: 72, height: 72, borderRadius: 20, backgroundColor: 'rgba(37,99,235,0.12)', justifyContent: 'center', alignItems: 'center', marginBottom: 16, borderWidth: 1, borderColor: 'rgba(37,99,235,0.2)' },
-  pinHeading: { fontSize: 20, fontWeight: '700', color: '#F8FAFC', marginBottom: 6 },
-  pinSub: { fontSize: 13, color: '#94A3B8', marginBottom: 24, textAlign: 'center' },
-  btn: { width: '100%', height: 52, borderRadius: 14, backgroundColor: '#2563EB', justifyContent: 'center', alignItems: 'center' },
-  btnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  pinTitle: { fontSize: 22, fontWeight: '700', marginTop: 12 },
+  pinSub:   { fontSize: 14, textAlign: 'center' },
+  btn:      { height: 50, paddingHorizontal: 40, borderRadius: 14, justifyContent: 'center', alignItems: 'center', marginTop: 8 },
+  btnTxt:   { color: '#fff', fontWeight: '700', fontSize: 16 },
 
-  container: { flex: 1, backgroundColor: '#0F172A' },
-  header: { flexDirection: 'row', alignItems: 'flex-start', padding: 20, paddingTop: 56, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)' },
-  heading: { fontSize: 22, fontWeight: '700', color: '#F8FAFC' },
-  subheading: { fontSize: 12, color: '#64748B', marginTop: 2 },
-  adminName: { fontSize: 12, color: '#3B82F6', marginTop: 3 },
-  headerRight: { alignItems: 'flex-end', gap: 8 },
-  countBadge: { backgroundColor: 'rgba(37,99,235,0.12)', paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(37,99,235,0.2)' },
-  countText: { fontSize: 12, fontWeight: '700', color: '#3B82F6' },
-  logoutBtn: { width: 36, height: 36, borderRadius: 10, backgroundColor: 'rgba(239,68,68,0.1)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(239,68,68,0.2)' },
+  /* Header */
+  header:      { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: Platform.OS === 'ios' ? 10 : 20, paddingBottom: 14, borderBottomWidth: 1 },
+  headerLeft:  { flex: 1 },
+  heading:     { fontSize: 30, fontWeight: '700', marginBottom: 2 },
+  subDate:     { fontSize: 14, marginBottom: 2 },
+  adminLabel:  { fontSize: 13, fontWeight: '500' },
+  headerRight: { flexDirection: 'row', gap: 10 },
+  iconBtn:     { width: 42, height: 42, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
 
-  errorBar: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: 'rgba(245,158,11,0.08)', padding: 12, marginHorizontal: 16, marginTop: 12, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(245,158,11,0.2)' },
-  errorBarText: { flex: 1, fontSize: 11, color: '#F59E0B', lineHeight: 16 },
-  retryText: { fontSize: 12, color: '#3B82F6', fontWeight: '700' },
+  /* Stats bar */
+  statsBar: { flexDirection: 'row', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1 },
+  statItem: { flex: 1, alignItems: 'center' },
+  statVal:  { fontSize: 24, fontWeight: '700', marginBottom: 2 },
+  statLbl:  { fontSize: 12, fontWeight: '500' },
+  statDiv:  { width: 1, height: 28, marginHorizontal: 4 },
 
-  loadingWrap: { paddingTop: 40, alignItems: 'center', gap: 10 },
-  loadingText: { color: '#64748B', fontSize: 13 },
-  listContent: { padding: 16, paddingBottom: 40 },
-  emptyWrap: { alignItems: 'center', paddingTop: 60, gap: 12 },
-  emptyText: { color: '#64748B', fontSize: 14 },
-  retryBigBtn: { backgroundColor: 'rgba(37,99,235,0.12)', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(37,99,235,0.2)' },
-  retryBigText: { color: '#3B82F6', fontWeight: '700', fontSize: 13 },
+  /* Error */
+  errorBar: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 16, marginVertical: 8, padding: 12, borderRadius: 10 },
+  errorTxt: { flex: 1, fontSize: 13 },
+  retryTxt: { fontSize: 13, fontWeight: '700' },
 
-  card: { backgroundColor: '#1E293B', borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' },
-  cardTop: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
-  avatar: { width: 44, height: 44, borderRadius: 13, backgroundColor: '#2563EB', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  avatarText: { fontSize: 14, fontWeight: '700', color: '#fff' },
-  cardInfo: { flex: 1 },
-  name: { fontSize: 15, fontWeight: '600', color: '#F8FAFC' },
-  empCode: { fontSize: 12, color: '#64748B', marginTop: 1 },
+  loadingWrap: { paddingTop: 40, alignItems: 'center' },
+  listPad:     { padding: 16, paddingTop: 10 },
 
-  badgePresent: { backgroundColor: 'rgba(5,150,105,0.12)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(5,150,105,0.2)' },
-  badgePresentText: { color: '#10B981', fontSize: 11, fontWeight: '700' },
-  badgeAbsent: { backgroundColor: 'rgba(220,38,38,0.12)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(220,38,38,0.2)' },
-  badgeAbsentText: { color: '#EF4444', fontSize: 11, fontWeight: '700' },
-  badgePending: { backgroundColor: 'rgba(100,116,139,0.12)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
-  badgePendingText: { color: '#94A3B8', fontSize: 11, fontWeight: '700' },
+  emptyWrap:   { alignItems: 'center', paddingTop: 60, gap: 14 },
+  emptyTxt:    { fontSize: 15, textAlign: 'center' },
+  emptyBtn:    { paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12 },
+  emptyBtnTxt: { fontSize: 15, fontWeight: '600' },
 
-  timeRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(15,23,42,0.5)', borderRadius: 10, padding: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.04)' },
-  timeBox: { flex: 1, alignItems: 'center', flexDirection: 'row', gap: 5 },
-  timeSep: { width: 1, height: 20, backgroundColor: 'rgba(255,255,255,0.08)' },
-  timeLabel: { fontSize: 11, color: '#64748B', fontWeight: '600' },
-  timeValue: { fontSize: 13, color: '#F8FAFC', fontWeight: '600' },
+  /* Card */
+  card:     { borderRadius: 18, padding: 16, marginBottom: 12, elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 6 },
+  cardTop:  { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
+  avatar:   { width: 46, height: 46, borderRadius: 13, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  avatarTxt:{ fontSize: 16, fontWeight: '700', color: '#fff' },
+  nameCol:  { flex: 1 },
+  nameText: { fontSize: 16, fontWeight: '600', marginBottom: 2 },
+  codeText: { fontSize: 13 },
+  badge:    { paddingHorizontal: 11, paddingVertical: 5, borderRadius: 20 },
+  badgeTxt: { fontSize: 12, fontWeight: '600' },
 
-  locationRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8, gap: 5 },
-  locationText: { fontSize: 12, color: '#60A5FA', flex: 1 },
+  timeRow:  { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  timeBox:  { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, padding: 10, borderRadius: 10 },
+  timeDiv:  { width: 1, height: 22, marginHorizontal: 8 },
+  timeLbl:  { fontSize: 12, fontWeight: '500' },
+  timeVal:  { fontSize: 13, fontWeight: '700', marginLeft: 'auto' },
 
-  reasonRow: { flexDirection: 'row', alignItems: 'center', marginTop: 6, gap: 5, backgroundColor: 'rgba(245,158,11,0.08)', padding: 8, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(245,158,11,0.15)' },
-  reasonText: { fontSize: 12, color: '#F59E0B', flex: 1 },
-
-  tapHint: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 8, gap: 3 },
-  tapHintText: { fontSize: 10, color: '#3d4f6e' },
+  locRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 4 },
+  locTxt: { fontSize: 12, flex: 1 },
+  tapRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 4, gap: 2 },
+  tapTxt: { fontSize: 11 },
 
   /* ── Modal ── */
-  modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.6)' },
-  modalSheet: { backgroundColor: '#0F172A', borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingTop: 8, paddingHorizontal: 20, paddingBottom: 0, maxHeight: '88%', borderTopWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
-  modalHandle: { width: 36, height: 4, backgroundColor: 'rgba(148,163,184,0.3)', borderRadius: 2, alignSelf: 'center', marginBottom: 16 },
+  modalRoot: { flex: 1 },
 
-  modalHeader: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 16 },
-  modalAvatar: { width: 52, height: 52, borderRadius: 15, backgroundColor: '#2563EB', justifyContent: 'center', alignItems: 'center' },
-  modalAvatarText: { fontSize: 16, fontWeight: '700', color: '#fff' },
-  modalName: { fontSize: 18, fontWeight: '700', color: '#F8FAFC' },
-  modalEmpCode: { fontSize: 12, color: '#64748B', marginTop: 1 },
-  modalPin: { fontSize: 11, color: '#3B82F6', marginTop: 2 },
-  closeBtn: { width: 34, height: 34, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.06)', justifyContent: 'center', alignItems: 'center' },
+  mHeader:   { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 20, borderBottomWidth: 1 },
+  mAvatar:   { width: 54, height: 54, borderRadius: 15, justifyContent: 'center', alignItems: 'center' },
+  mAvatarTxt:{ fontSize: 18, fontWeight: '700', color: '#fff' },
+  mNameCol:  { flex: 1 },
+  mName:     { fontSize: 18, fontWeight: '700', marginBottom: 2 },
+  mCode:     { fontSize: 13 },
+  closeBtn:  { width: 40, height: 40, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
 
-  statsRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
-  statBox: { flex: 1, backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 12, padding: 10, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
-  statNum: { fontSize: 20, fontWeight: '700', color: '#F8FAFC' },
-  statLbl: { fontSize: 10, color: '#64748B', marginTop: 2, fontWeight: '600' },
+  mStatsRow: { flexDirection: 'row', gap: 10, padding: 16 },
+  mStatBox:  { flex: 1, alignItems: 'center', padding: 12, borderRadius: 14 },
+  mStatVal:  { fontSize: 22, fontWeight: '700', marginBottom: 4 },
+  mStatLbl:  { fontSize: 11, fontWeight: '600' },
 
-  tabRow: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 12, padding: 4, marginBottom: 14 },
-  tab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: 8, borderRadius: 9 },
-  tabActive: { backgroundColor: '#1E293B' },
-  tabText: { fontSize: 12, fontWeight: '600', color: '#64748B' },
-  tabTextActive: { color: '#2563EB' },
+  tabBar:    { flexDirection: 'row', marginHorizontal: 16, marginBottom: 8, padding: 4, borderRadius: 14 },
+  tabBtn:    { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, borderRadius: 10 },
+  tabTxt:    { fontSize: 13, fontWeight: '600' },
 
-  modalLoading: { paddingVertical: 40, alignItems: 'center', gap: 10 },
-  modalLoadingText: { color: '#64748B', fontSize: 13 },
-  modalScroll: { flex: 1 },
+  mLoadWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 60, gap: 12 },
+  mLoadTxt:  { fontSize: 14 },
 
-  emptyTab: { alignItems: 'center', paddingVertical: 40, gap: 10 },
-  emptyTabText: { color: '#64748B', fontSize: 13 },
+  /* ✅ KEY: ScrollView takes all remaining space */
+  mScroll:        { flex: 1 },
+  mScrollContent: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 60 },
 
-  histCard: { backgroundColor: '#1E293B', borderRadius: 12, padding: 12, marginBottom: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' },
-  histTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
-  histDateBox: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  histDate: { fontSize: 13, color: '#94A3B8', fontWeight: '600' },
-  histTimeRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(15,23,42,0.6)', borderRadius: 8, padding: 8 },
-  histTimeBox: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 5 },
-  histTimeLabel: { fontSize: 10, color: '#64748B', fontWeight: '600' },
-  histTimeValue: { fontSize: 12, color: '#F8FAFC', fontWeight: '600' },
-  histLocRow: { flexDirection: 'row', alignItems: 'center', marginTop: 7, gap: 4 },
-  histLocText: { fontSize: 11, color: '#60A5FA', flex: 1 },
-  histReasonRow: { flexDirection: 'row', alignItems: 'center', marginTop: 6, gap: 4, backgroundColor: 'rgba(245,158,11,0.08)', padding: 6, borderRadius: 6 },
-  histReasonText: { fontSize: 11, color: '#F59E0B', flex: 1 },
+  emptyTab:    { alignItems: 'center', paddingVertical: 60, gap: 12 },
+  emptyTabTxt: { fontSize: 15 },
 
-  leaveCard: { backgroundColor: '#1E293B', borderRadius: 12, padding: 12, marginBottom: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' },
-  leaveTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 8 },
-  leaveIconWrap: { width: 36, height: 36, borderRadius: 10, backgroundColor: 'rgba(245,158,11,0.1)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(245,158,11,0.2)' },
-  leaveType: { fontSize: 13, fontWeight: '700', color: '#F8FAFC', marginBottom: 2 },
-  leaveReason: { fontSize: 12, color: '#64748B' },
-  leaveStatus: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(201,168,76,0.2)', backgroundColor: 'rgba(201,168,76,0.1)' },
-  leaveStatusText: { fontSize: 10, fontWeight: '700', color: '#F59E0B' },
-  leaveDates: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  leaveDateText: { fontSize: 12, color: '#94A3B8' },
+  /* History card */
+  histCard:     { borderRadius: 14, padding: 14, marginBottom: 10, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4 },
+  histTop:      { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  histDateRow:  { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  histDate:     { fontSize: 14, fontWeight: '600' },
+  hBadge:       { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
+  hBadgeTxt:    { fontSize: 12, fontWeight: '600' },
+  histTimes:    { flexDirection: 'row', alignItems: 'center', borderRadius: 10, padding: 10, marginBottom: 6 },
+  histTimeItem: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 5 },
+  histTimeDiv:  { width: 1, height: 20, marginHorizontal: 8 },
+  histTimeLbl:  { fontSize: 12, fontWeight: '500' },
+  histTimeVal:  { fontSize: 13, fontWeight: '700' },
+  histLocRow:   { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 5 },
+  histLocTxt:   { fontSize: 12, flex: 1 },
+  reasonBox:    { flexDirection: 'row', alignItems: 'center', gap: 6, padding: 8, borderRadius: 8, marginTop: 7 },
+  reasonTxt:    { fontSize: 12, flex: 1 },
+
+  /* Leave card */
+  leaveCard:      { borderRadius: 14, padding: 14, marginBottom: 10, elevation: 2 },
+  leaveTop:       { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 },
+  leaveIconBox:   { width: 40, height: 40, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+  leaveInfo:      { flex: 1 },
+  leaveType:      { fontSize: 15, fontWeight: '600', marginBottom: 2 },
+  leaveDates:     { fontSize: 13 },
+  leaveStatus:    { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
+  leaveStatusTxt: { fontSize: 12, fontWeight: '600' },
+  leaveReason:    { fontSize: 13, lineHeight: 20 },
 });

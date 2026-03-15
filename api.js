@@ -99,7 +99,7 @@ export async function getHistory(empId) {
         
         return {
             attendance: data.attendance || [],
-            leaves: data.leaves || []
+            leaves: data.leaves || data.leave || []
         };
     } catch (err) {
         console.error("⚠️ History fetch error:", err);
@@ -431,7 +431,7 @@ export async function getLeaveRequests(userId) {
         
         return {
             success: true,
-            leaves: data.leaves || []
+            leaves: data.leaves || data.leave || []
         };
     } catch (err) {
         console.error("⚠️ Leave requests error:", err);
@@ -536,3 +536,4 @@ export async function getHolidays(companyId, year) {
 }
 
 export { BASE_URL };
+
